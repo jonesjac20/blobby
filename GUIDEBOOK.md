@@ -28,10 +28,10 @@ Goal: run the tick loop in isolation and confirm movement, eating, and splitting
 
 ### Fill in each server file
 
-- [ ] **[Agent]** `server/config.py` — constants from source plan section 5: `TICK_RATE = 30`, `MIN_SPLIT_MASS = 35`, `MAX_PIECES = 8`, `EAT_RATIO = 1.25`, `REMERGE_SECONDS = 12`, `SPLIT_KICK_DECAY_SECONDS = 0.5`. Also `WORLD_WIDTH`, `WORLD_HEIGHT`, `FOOD_COUNT`, `FOOD_MASS`, and a `speed_for_mass(mass)` function (agar.io style: speed decreases as mass grows).
-- [ ] **[Agent]** `server/models.py` — dataclasses only, no behavior: `Piece(piece_id, x, y, mass, vx, vy, split_time)` where `vx/vy` is the decaying split kick and `split_time` gates remerge; `Player(id, name, pieces, last_input)`; `Food(id, x, y)`.
-- [ ] **[Agent]** `server/world.py` — `World` holds `players` and `food` dicts; methods `spawn_player`, `spawn_food_to_target_count`, `remove_player`. IDs via `uuid.uuid4().hex[:8]`.
-- [ ] **[Agent]** `server/simulation.py` — pure `step(world, dt)` in this order:
+- [ X ] **[Agent]** `server/config.py` — constants from source plan section 5: `TICK_RATE = 30`, `MIN_SPLIT_MASS = 35`, `MAX_PIECES = 8`, `EAT_RATIO = 1.25`, `REMERGE_SECONDS = 12`, `SPLIT_KICK_DECAY_SECONDS = 0.5`. Also `WORLD_WIDTH`, `WORLD_HEIGHT`, `FOOD_COUNT`, `FOOD_MASS`, and a `speed_for_mass(mass)` function (agar.io style: speed decreases as mass grows).
+- [ X ] **[Agent]** `server/models.py` — dataclasses only, no behavior: `Piece(piece_id, x, y, mass, vx, vy, split_time)` where `vx/vy` is the decaying split kick and `split_time` gates remerge; `Player(id, name, pieces, last_input)`; `Food(id, x, y)`.
+- [ X ] **[Agent]** `server/world.py` — `World` holds `players` and `food` dicts; methods `spawn_player`, `spawn_food_to_target_count`, `remove_player`. IDs via `uuid.uuid4().hex[:8]`.
+- [ X ] **[Agent]** `server/simulation.py` — pure `step(world, dt)` in this order:
   1. Apply each player's `last_input` as a normalized velocity scaled by `speed_for_mass(piece.mass)`, added to the decaying split kick.
   2. Integrate position, clamp to world bounds.
   3. Player-food collision by distance ≤ piece radius (radius = `sqrt(mass / π)`).
@@ -40,7 +40,7 @@ Goal: run the tick loop in isolation and confirm movement, eating, and splitting
   6. Remerge same-player pieces whose `split_time` is older than `REMERGE_SECONDS` and whose circles overlap.
   7. Respawn food up to `FOOD_COUNT`.
   Also expose `try_split(player, cursor_dx, cursor_dy)` that enforces `MIN_SPLIT_MASS` and `MAX_PIECES`.
-- [ ] **[Agent]** `server/main.py` — `asyncio` loop sleeping `1/TICK_RATE` per tick, calling `simulation.step`. Builds a `World` with 2 hardcoded players: **A** whose `last_input` is recomputed each tick to point at the nearest food, **B** moving in a slow circle. Every ~30 ticks (~1s), prints one summary line: `tick N | A pieces=[m1,m2] pos=(x,y) | B pieces=[m3] pos=(x,y) | food=K`. After ~3s, call `try_split` on A once so splitting → decay → remerge is visible. Ctrl+C exits cleanly.
+- [ X ] **[Agent]** `server/main.py` — `asyncio` loop sleeping `1/TICK_RATE` per tick, calling `simulation.step`. Builds a `World` with 2 hardcoded players: **A** whose `last_input` is recomputed each tick to point at the nearest food, **B** moving in a slow circle. Every ~30 ticks (~1s), prints one summary line: `tick N | A pieces=[m1,m2] pos=(x,y) | B pieces=[m3] pos=(x,y) | food=K`. After ~3s, call `try_split` on A once so splitting → decay → remerge is visible. Ctrl+C exits cleanly.
 
 ### Verify each behavior
 
@@ -52,6 +52,7 @@ Goal: run the tick loop in isolation and confirm movement, eating, and splitting
 - [ ] **[Both]** Player's own pieces never eat each other — they can only remerge.
 - [ ] **[Both]** `try_split` refuses to split a piece under `MIN_SPLIT_MASS`.
 - [ ] **[Both]** `try_split` refuses to split when the player already has `MAX_PIECES`.
+- [ ] **[Both]** `try_split` is exponential in growth, halving in mass (i.e., it should split all possible pieces that have been split previously)
 - [ ] **[Both]** A successful split produces two pieces of half mass, and the new one has a velocity kick toward the cursor direction.
 - [ ] **[Both]** Split kick decays to zero over ~`SPLIT_KICK_DECAY_SECONDS`.
 - [ ] **[Both]** Two same-player pieces remerge after `REMERGE_SECONDS` when their circles overlap.
