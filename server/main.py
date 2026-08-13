@@ -27,7 +27,7 @@ DEMO_MASS = 200
 MAX_TICK_SECONDS = 0.25
 
 
-def _centroid(player: Player) -> tuple[float, float]:
+def centroid(player: Player) -> tuple[float, float]:
     if not player.pieces:
         return 0.0, 0.0
     total = sum(p.mass for p in player.pieces)
@@ -37,11 +37,11 @@ def _centroid(player: Player) -> tuple[float, float]:
     y = sum(p.y * p.mass for p in player.pieces) / total
     return x, y
 
-
-def _input_toward_nearest_food(world: World, player: Player) -> tuple[float, float]:
+# Handles bot input, calculates the direction this player should move in to reach the nearest food
+def input_toward_nearest_food(world: World, player: Player) -> tuple[float, float]:
     if not world.food or not player.pieces:
         return 0.0, 0.0
-    cx, cy = _centroid(player)
+    cx, cy = centroid(player)
     nearest = min(world.food.values(), key=lambda f: (f.x - cx) ** 2 + (f.y - cy) ** 2)
     dx, dy = nearest.x - cx, nearest.y - cy
     length = math.hypot(dx, dy)
@@ -54,8 +54,14 @@ def _summary_line(world: World, tick: int, a: Player, b: Player) -> str:
     parts = [f"tick {tick}"]
     for player in (a, b):
         masses = ",".join(f"{p.mass:.0f}" for p in player.pieces)
-        x, y = _centroid(player)
-        parts.append(f"{player.name} pieces=[{masses}] pos=({x:.0f},{y:.0f})")
+        x, y = centroid(player)
+        summary = f"{player.name} pieces=[{masses}] pos=({x:.0f},{y:.0f})"
+        if len(player.pieces) > 1:
+            # A centroid hides the split kick entirely, so spell the halves out
+            # while they are apart.
+            spread = " ".join(f"({p.x:.0f},{p.y:.0f})" for p in player.pieces)
+            summary += f" at={spread}"
+        parts.append(summary)
     parts.append(f"food={len(world.food)}")
     return " | ".join(parts)
 
@@ -80,7 +86,7 @@ async def run() -> None:
         last = now
         tick += 1
 
-        player_a.last_input = _input_toward_nearest_food(world, player_a)
+        player_a.last_input = input_toward_nearest_food(world, player_a)
         angle = 2.0 * math.pi * world.now / CIRCLE_PERIOD_SECONDS
         player_b.last_input = (math.cos(angle), math.sin(angle))
 

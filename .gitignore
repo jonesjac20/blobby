@@ -23,6 +23,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Generated scenario recordings (rebuild with: python -m tools.record)
+client/recordings/
+
 # Test / coverage
 .pytest_cache/
 .coverage
