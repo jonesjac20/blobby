@@ -1,0 +1,414 @@
+/*
+ * Shared client styling.
+ *
+ * The tokens and the `canvas-wrap` / full-bleed canvas rules are reused by the
+ * Phase 3 game client; everything under "Phase 1 viewer" is scaffolding for the
+ * verification tool and can be dropped once the real client exists.
+ */
+
+:root {
+  --bg: #0b0e16;
+  --panel: #141a27;
+  --panel-2: #1b2334;
+  --line: #26304a;
+  --text: #e6ebf5;
+  --muted: #8e9bb5;
+  --accent: #5aa9ff;
+  --good: #64d68b;
+  --warn: #ffd166;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* --- Phase 1 viewer ----------------------------------------------------- */
+
+.viewer {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 320px;
+  height: 100vh;
+}
+
+.sidebar,
+.inspector {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+}
+
+.inspector {
+  border-left: 1px solid var(--line);
+  gap: 1px;
+  background: var(--line);
+}
+
+.sidebar-head {
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sidebar-head h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+}
+
+.sidebar-head p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.scenario-list {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 0;
+  list-style: none;
+  counter-reset: scenario;
+}
+
+.scenario-list li {
+  counter-increment: scenario;
+}
+
+.scenario-list button {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 16px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scenario-list button::before {
+  content: counter(scenario);
+  flex: none;
+  width: 18px;
+  color: #55617c;
+  font: 11px/1.7 var(--mono);
+  text-align: right;
+}
+
+.scenario-list button:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.scenario-list button[aria-current="true"] {
+  border-left-color: var(--accent);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.scenario-list button.is-verified::after {
+  content: "✓";
+  margin-left: auto;
+  color: var(--good);
+}
+
+.scenario-list .demo-entry button {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  padding-top: 12px;
+}
+
+.sidebar-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font: 12px var(--mono);
+}
+
+.link-button {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--text);
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.stage-head {
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.stage-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.checklist {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font: 12px/1.5 var(--mono);
+}
+
+.canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #070a11;
+}
+
+.event-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(20, 26, 39, 0.94);
+  color: var(--warn);
+  font: 12px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.transport button {
+  min-width: 38px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 12px var(--mono);
+  cursor: pointer;
+}
+
+.transport button:hover {
+  border-color: var(--accent);
+}
+
+.transport button.primary {
+  min-width: 62px;
+  border-color: transparent;
+  background: var(--accent);
+  color: #06182e;
+  font-weight: 700;
+}
+
+#timeline {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--accent);
+}
+
+.clock {
+  min-width: 62px;
+  color: var(--muted);
+  font: 12px var(--mono);
+  text-align: right;
+}
+
+.speed,
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.speed select {
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 12px var(--mono);
+}
+
+.panel {
+  padding: 14px 16px;
+  background: var(--panel);
+}
+
+.panel.grow {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.pill {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 11px var(--mono);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.expect {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.verify {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.verify input {
+  accent-color: var(--good);
+}
+
+.players {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.player-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 12px var(--mono);
+}
+
+.swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.player-row .name {
+  flex: 1;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-row .masses {
+  color: var(--muted);
+}
+
+.player-row.is-out .name {
+  color: #6b7691;
+  text-decoration: line-through;
+}
+
+.event-log {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.event-log li {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  color: var(--muted);
+  font: 11.5px var(--mono);
+}
+
+.event-log li.is-current {
+  color: var(--warn);
+}
+
+.event-log .at {
+  flex: none;
+  color: #5b657f;
+}
+
+.event-log button {
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.event-log button:hover {
+  color: var(--text);
+}
+
+.empty {
+  color: #5b657f;
+  font-size: 12px;
+}
