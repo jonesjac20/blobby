@@ -66,6 +66,24 @@ def add_piece(
     return piece
 
 
+def split(
+    world: World, player: Player, direction: tuple[float, float] = (1.0, 0.0)
+) -> int:
+    """Split along `direction` the way a client does: aim, then tap split.
+
+    The split message carries no direction on the wire, so `try_split` reads
+    `last_input`. The previous input is put back afterwards, so a test that
+    staged a stationary blob still has one; steering is a separate concern.
+    Tests about the aiming itself set `last_input` directly instead.
+    """
+    previous = player.last_input
+    player.last_input = direction
+    try:
+        return simulation.try_split(world, player)
+    finally:
+        player.last_input = previous
+
+
 def advance(world: World, seconds: float, dt: float) -> int:
     """Step until sim time has advanced by at least `seconds`. Returns tick count."""
     target = world.now + seconds

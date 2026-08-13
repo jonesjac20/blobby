@@ -87,7 +87,9 @@ async def run() -> None:
         simulation.step(world, dt)
 
         if not has_split and world.now >= SPLIT_AT_SECONDS:
-            simulation.try_split(world, player_a, 1.0, 0.0)
+            # A's input already points at the nearest food this tick, so the
+            # split kick fires that way too.
+            simulation.try_split(world, player_a)
             has_split = True
 
         if tick % SUMMARY_EVERY_TICKS == 0:

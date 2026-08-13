@@ -33,13 +33,15 @@ Goal: run the tick loop in isolation and confirm movement, eating, and splitting
 - [ X ] **[Agent]** `server/world.py` — `World` holds `players` and `food` dicts; methods `spawn_player`, `spawn_food_to_target_count`, `remove_player`. IDs via `uuid.uuid4().hex[:8]`.
 - [ X ] **[Agent]** `server/simulation.py` — pure `step(world, dt)` in this order:
   1. Apply each player's `last_input` as a normalized velocity scaled by `speed_for_mass(piece.mass)`, added to the decaying split kick.
-  2. Integrate position, clamp to world bounds.
-  3. Player-food collision by distance ≤ piece radius (radius = `sqrt(mass / π)`).
-  4. Player-player + own-piece checks using the `A.mass > B.mass * 1.25` rule from source plan section 5; own pieces never eat each other.
-  5. Decay `vx/vy` toward zero over `SPLIT_KICK_DECAY_SECONDS`.
-  6. Remerge same-player pieces whose `split_time` is older than `REMERGE_SECONDS` and whose circles overlap.
-  7. Respawn food up to `FOOD_COUNT`.
-  Also expose `try_split(player, cursor_dx, cursor_dy)` that enforces `MIN_SPLIT_MASS` and `MAX_PIECES`.
+  2. Integrate position.
+  3. Cluster forces: draw a player's own pieces toward each other at `COHESION_SPEED`, or at `MERGE_PULL_SPEED` once both of a pair's remerge timers have cleared. Skipped for any pair whose split kick is still active, so cohesion never fights the kick.
+  4. Resolve collisions by mass-weighted position projection, then clamp to world bounds. Own pieces settle at `OWN_PIECE_OVERLAP` depth; different players' pieces are solid, *unless* one can eat the other, in which case they are left free to interpenetrate.
+  5. Player-food collision by distance ≤ piece radius (radius = `sqrt(mass / π)`).
+  6. Player-player + own-piece checks using the `A.mass > B.mass * 1.25` rule from source plan section 5, and additionally requiring `EAT_OVERLAP` engulfment depth so a graze is a collision rather than a kill; own pieces never eat each other.
+  7. Decay `vx/vy` toward zero over `SPLIT_KICK_DECAY_SECONDS`. Nothing but the split kick ever writes these, so they stay meaningful on the wire.
+  8. Remerge same-player pieces whose `split_time` is older than `REMERGE_SECONDS` and whose bodies have sunk to `MERGE_OVERLAP` — deeper than pieces rest at, so the merge pull has to drag them the last of the way.
+  9. Respawn food up to `FOOD_COUNT`.
+  Also expose `try_split(world, player)` that aims the kick along `player.last_input` (the wire message carries no direction) and enforces `MIN_SPLIT_MASS` and `MAX_PIECES`.
 - [ X ] **[Agent]** `server/main.py` — `asyncio` loop sleeping `1/TICK_RATE` per tick, calling `simulation.step`. Builds a `World` with 2 hardcoded players: **A** whose `last_input` is recomputed each tick to point at the nearest food, **B** moving in a slow circle. Every ~30 ticks (~1s), prints one summary line: `tick N | A pieces=[m1,m2] pos=(x,y) | B pieces=[m3] pos=(x,y) | food=K`. After ~3s, call `try_split` on A once so splitting → decay → remerge is visible. Ctrl+C exits cleanly.
 
 ### Verify each behavior
@@ -50,12 +52,15 @@ Goal: run the tick loop in isolation and confirm movement, eating, and splitting
 - [ ] **[Both]** Food gets eaten when a piece's circle covers the food's center; piece mass increases; food is removed and eventually respawns.
 - [ ] **[Both]** Player-vs-player eat rule: `A.mass > B.mass * 1.25` is required. Equal or near-equal blobs don't eat each other.
 - [ ] **[Both]** Player's own pieces never eat each other — they can only remerge.
+- [ ] **[Both]** Different players' pieces collide solidly when neither can eat the other; a predator is not blocked by its prey.
 - [ ] **[Both]** `try_split` refuses to split a piece under `MIN_SPLIT_MASS`.
 - [ ] **[Both]** `try_split` refuses to split when the player already has `MAX_PIECES`.
 - [ ] **[Both]** `try_split` is exponential in growth, halving in mass (i.e., it should split all possible pieces that have been split previously)
 - [ ] **[Both]** A successful split produces two pieces of half mass, and the new one has a velocity kick toward the cursor direction.
 - [ ] **[Both]** Split kick decays to zero over ~`SPLIT_KICK_DECAY_SECONDS`.
+- [ ] **[Both]** Split halves pop apart on the kick, then drift back into contact on their own.
 - [ ] **[Both]** Two same-player pieces remerge after `REMERGE_SECONDS` when their circles overlap.
+- [ ] **[Both]** Once the remerge timer clears, the pair visibly sinks into each other before merging.
 - [ ] **[Both]** `food` dict length stays at `FOOD_COUNT` over time.
 
 ### How to verify
@@ -70,8 +75,8 @@ Expected console output over ~15 seconds:
 
 - Player A's total mass steadily climbs as it eats food.
 - Around t = 3s, one summary line shows A now has 2 pieces instead of 1.
-- Over the next ~0.5s, watch the coordinates of the two A pieces diverge (that's the kick decaying).
-- Around t = 15s, the two A pieces collapse back into one.
+- Over the next ~0.5s the two A coordinates diverge by ~30 units (that's the kick decaying), then close back up over the second or so after that (that's cohesion).
+- Shortly after t = 15s, the two A pieces sink together and collapse back into one.
 - The `food=K` count hovers near `FOOD_COUNT`.
 
 Ctrl+C to stop.

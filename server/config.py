@@ -22,14 +22,41 @@ INITIAL_PLAYER_MASS = 40
 # straight over the food they are chasing instead of eating it.
 BASE_SPEED = 100
 # Initial magnitude of the velocity kick given to a freshly split piece. Total
-# kick displacement is SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2; keeping
-# that near the blob radius means halves drift apart but stay in contact, so the
-# remerge timer is what decides when they recombine.
-SPLIT_KICK_SPEED = 40
+# kick displacement is SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2, so the
+# halves of a mass-100 blob pop about 30 units apart - several blob widths, and
+# unmistakable. The kick does not have to stay small to keep the halves in
+# contact; COHESION_SPEED below is what pulls them back.
+SPLIT_KICK_SPEED = 120
 
 # Exponent of the agar.io-style speed falloff. Larger means heavier blobs slow
 # down more sharply.
 SPEED_FALLOFF = 0.4
+
+# --- soft-body cluster and collision ---------------------------------------
+#
+# Each of the three overlap constants is a threshold on simulation.engulfment,
+# which reads 0.0 when two circles just touch and 1.0 when the smaller sits
+# fully inside the larger. Their ordering is the whole design: pieces rest in
+# contact, and eating or merging takes real penetration past that resting depth.
+
+# Engulfment a player's own pieces settle at. Deep enough to read as one fused
+# body, shallow enough that the merge pull has somewhere to travel.
+OWN_PIECE_OVERLAP = 0.15
+# The prey's center has to reach the predator's rim before it is eaten, so a
+# graze reads as a shove rather than a kill.
+EAT_OVERLAP = 0.5
+# Just past EAT_OVERLAP, so a pair resting in contact has to actively sink in
+# before it merges.
+MERGE_OVERLAP = 0.6
+
+# World units per second each of a player's pieces drifts toward its neighbours.
+COHESION_SPEED = 12.0
+# World units per second once a pair's remerge timer clears. Both pieces move,
+# so a resting pair closes the gap in roughly 0.4s: visible, not a snap.
+MERGE_PULL_SPEED = 6.0
+# Position-projection rounds per tick. Projection is dt-independent, so this is
+# the only knob deciding how firmly a crowded cluster is pushed apart.
+SEPARATION_PASSES = 4
 
 
 def speed_for_mass(mass: float) -> float:

@@ -1,18 +1,31 @@
 """Per-tick simulation. Pure functions over a World; no state of their own.
 
-step(world, dt) performs, in order: advance sim time -> apply input -> move ->
-collide with food -> collide with other players -> decay split velocity ->
-remerge -> respawn food.
+step(world, dt) performs, in order: advance sim time -> apply input and kick ->
+cluster forces -> resolve collisions and clamp to bounds -> collide with food ->
+collide with other players -> decay split velocity -> remerge -> respawn food.
+
+Pieces have real bodies here, and every geometric test is a threshold on
+`engulfment` rather than a plain circle touch, so contact and penetration can
+mean different things. A player's own pieces rest overlapped at
+OWN_PIECE_OVERLAP and are drawn together by the cluster forces; different
+players' pieces are solid unless one can eat the other; eating and remerging
+each need the deeper EAT_OVERLAP and MERGE_OVERLAP.
 """
 
 import math
 
 from server.config import (
+    COHESION_SPEED,
+    EAT_OVERLAP,
     EAT_RATIO,
     FOOD_MASS,
     MAX_PIECES,
+    MERGE_OVERLAP,
+    MERGE_PULL_SPEED,
     MIN_SPLIT_MASS,
+    OWN_PIECE_OVERLAP,
     REMERGE_SECONDS,
+    SEPARATION_PASSES,
     SPLIT_KICK_DECAY_SECONDS,
     SPLIT_KICK_SPEED,
     WORLD_HEIGHT,
@@ -58,10 +71,45 @@ def _normalized(dx: float, dy: float) -> tuple[float, float]:
     return dx / length, dy / length
 
 
-def _overlaps(a: Piece, b: Piece) -> bool:
-    return math.hypot(a.x - b.x, a.y - b.y) < radius_for_mass(a.mass) + radius_for_mass(
-        b.mass
-    )
+def engulfment(a: Piece, b: Piece) -> float:
+    """0.0 when the circles just touch, 1.0 when the smaller sits fully inside.
+
+    Scale-free, so one number serves every geometric test in the simulation: a
+    grazing contact and a near-total swallow are far apart on it regardless of
+    whether the pieces are spawn-sized or the width of the screen.
+    """
+    ra, rb = radius_for_mass(a.mass), radius_for_mass(b.mass)
+    depth = ra + rb - math.hypot(a.x - b.x, a.y - b.y)
+    smaller = min(ra, rb)
+    if smaller <= 0.0:
+        # A massless piece has no body to sink into, so contact is already total.
+        return 1.0 if depth >= 0.0 else 0.0
+    return depth / (2.0 * smaller)
+
+
+def _distance_for_engulfment(a: Piece, b: Piece, overlap: float) -> float:
+    """The center distance at which `engulfment(a, b)` would read `overlap`."""
+    ra, rb = radius_for_mass(a.mass), radius_for_mass(b.mass)
+    return ra + rb - overlap * 2.0 * min(ra, rb)
+
+
+def _can_eat(a: Piece, b: Piece) -> bool:
+    """Whether `a` is heavy enough to eat `b`, ignoring where the two are."""
+    return a.mass > b.mass * EAT_RATIO
+
+
+def _merge_ready(world: World, piece: Piece) -> bool:
+    return world.now - piece.split_time >= REMERGE_SECONDS
+
+
+def _kick_active_during_tick(previous_now: float, piece: Piece) -> bool:
+    """Whether this piece's split kick contributes displacement this tick.
+
+    Measured at the start of the tick to match `_kick_integral`, which covers
+    [previous_now, world.now]. The tick that consumes the last sliver of the kick
+    counts, so the cluster forces never fight the kick even at its final tick.
+    """
+    return previous_now - piece.split_time < SPLIT_KICK_DECAY_SECONDS
 
 
 def step(world: World, dt: float) -> None:
@@ -69,6 +117,8 @@ def step(world: World, dt: float) -> None:
     world.now += dt
 
     _apply_input_and_move(world, previous_now, dt)
+    _cluster_forces(world, previous_now, dt)
+    _resolve_collisions(world)
     _eat_food(world)
     _eat_other_players(world)
     _decay_split_kicks(world)
@@ -88,8 +138,135 @@ def _apply_input_and_move(world: World, previous_now: float, dt: float) -> None:
             piece.x += input_x * speed * dt + piece.initial_kick_vx * kick_seconds
             piece.y += input_y * speed * dt + piece.initial_kick_vy * kick_seconds
 
-            piece.x = min(max(piece.x, 0.0), WORLD_WIDTH)
-            piece.y = min(max(piece.y, 0.0), WORLD_HEIGHT)
+
+def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
+    """Draw each player's own pieces together: cohesion, then the merge pull.
+
+    Deliberately position-level and never written to `vx/vy`, so those fields
+    keep meaning exactly "split kick" for the wire format and the debug arrows.
+
+    Runs before `_resolve_collisions` so the projection always has the last word.
+    That is what pins a settled pair to exactly OWN_PIECE_OVERLAP at any tick
+    rate: cohesion may overshoot, and the projection corrects it the same way
+    every time.
+    """
+    for player in world.players.values():
+        pieces = player.pieces
+        if len(pieces) < 2:
+            continue
+
+        pulls = [[0.0, 0.0] for _ in pieces]
+        # Per piece, because one pair may be merging while another only coheres.
+        caps = [0.0] * len(pieces)
+
+        for i, a in enumerate(pieces):
+            a_ready = _merge_ready(world, a)
+            a_kicking = _kick_active_during_tick(previous_now, a)
+            for j in range(i + 1, len(pieces)):
+                b = pieces[j]
+                if a_ready and _merge_ready(world, b):
+                    speed = MERGE_PULL_SPEED
+                    # All the way in; the remerge fires at MERGE_OVERLAP long
+                    # before the two centers actually meet.
+                    target = 0.0
+                elif a_kicking or _kick_active_during_tick(previous_now, b):
+                    continue
+                else:
+                    speed = COHESION_SPEED
+                    target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
+
+                dx, dy = b.x - a.x, b.y - a.y
+                distance = math.hypot(dx, dy)
+                gap = distance - target
+                if distance == 0.0 or gap <= 0.0:
+                    continue
+
+                # Halved because both pieces close on each other, and capped at
+                # the gap so the pair lands on the target instead of oscillating
+                # around it.
+                move = min(speed * dt, gap / 2.0)
+                ux, uy = dx / distance, dy / distance
+                pulls[i][0] += ux * move
+                pulls[i][1] += uy * move
+                pulls[j][0] -= ux * move
+                pulls[j][1] -= uy * move
+                caps[i] = max(caps[i], speed * dt)
+                caps[j] = max(caps[j], speed * dt)
+
+        for piece, (dx, dy), cap in zip(pieces, pulls, caps):
+            length = math.hypot(dx, dy)
+            if length == 0.0:
+                continue
+            # A piece in an eight-way cluster is pulled by seven neighbours; the
+            # cap stops it from travelling seven times as fast as a lone pair.
+            if length > cap:
+                dx, dy = dx * cap / length, dy * cap / length
+            piece.x += dx
+            piece.y += dy
+
+
+def _resolve_collisions(world: World) -> None:
+    """Push overlapping bodies apart, then clamp every piece into the world.
+
+    Position projection rather than impulses: it carries no dt, so a settled
+    configuration is identical at every tick rate.
+
+    A piece crushed into a corner by the final clamp may keep some residual
+    overlap. Bounds win over separation, which is the right way round.
+    """
+    bodies = [
+        (player.id, piece)
+        for player in world.players.values()
+        for piece in player.pieces
+    ]
+
+    for _ in range(SEPARATION_PASSES):
+        for i, (owner_a, a) in enumerate(bodies):
+            for j in range(i + 1, len(bodies)):
+                owner_b, b = bodies[j]
+                if owner_a == owner_b:
+                    # A mergeable pair is trying to sink into each other.
+                    if _merge_ready(world, a) and _merge_ready(world, b):
+                        continue
+                    target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
+                elif _can_eat(a, b) or _can_eat(b, a):
+                    # Never projected, or the predator could never reach the
+                    # EAT_OVERLAP depth that `_eat_other_players` waits for.
+                    continue
+                else:
+                    target = _distance_for_engulfment(a, b, 0.0)
+
+                _project_apart(a, b, target, j)
+
+    for _, piece in bodies:
+        piece.x = min(max(piece.x, 0.0), WORLD_WIDTH)
+        piece.y = min(max(piece.y, 0.0), WORLD_HEIGHT)
+
+
+def _project_apart(a: Piece, b: Piece, target: float, fallback_index: int) -> None:
+    """Separate to `target` center distance, moving the lighter piece further."""
+    dx, dy = b.x - a.x, b.y - a.y
+    distance = math.hypot(dx, dy)
+    if distance >= target:
+        return
+
+    if distance == 0.0:
+        # Coincident centers, as an exact zero-input split produces, have no
+        # separation axis. Deriving one from the piece's slot in the world keeps
+        # it reproducible, which a random or hash-derived angle would not be.
+        angle = 2.0 * math.pi * fallback_index / MAX_PIECES
+        ux, uy = math.cos(angle), math.sin(angle)
+    else:
+        ux, uy = dx / distance, dy / distance
+
+    push = target - distance
+    total = a.mass + b.mass
+    a_share = push * (b.mass / total) if total > 0.0 else push / 2.0
+    b_share = push - a_share
+    a.x -= ux * a_share
+    a.y -= uy * a_share
+    b.x += ux * b_share
+    b.y += uy * b_share
 
 
 def _eat_food(world: World) -> None:
@@ -109,7 +286,12 @@ def _eat_food(world: World) -> None:
 
 
 def _eat_other_players(world: World) -> None:
-    """Cross-player piece eating. A player's own pieces never eat each other."""
+    """Cross-player piece eating. A player's own pieces never eat each other.
+
+    Touching is not enough: `_resolve_collisions` leaves an edible pair free to
+    interpenetrate, and the kill only lands once the prey's center has reached
+    the predator's rim at EAT_OVERLAP. A graze is a collision.
+    """
     eaten: set[str] = set()
     players = list(world.players.values())
     for index, attacker in enumerate(players):
@@ -118,12 +300,12 @@ def _eat_other_players(world: World) -> None:
                 if a.piece_id in eaten:
                     continue
                 for b in defender.pieces:
-                    if b.piece_id in eaten or not _overlaps(a, b):
+                    if b.piece_id in eaten or engulfment(a, b) < EAT_OVERLAP:
                         continue
-                    if a.mass > b.mass * EAT_RATIO:
+                    if _can_eat(a, b):
                         a.mass += b.mass
                         eaten.add(b.piece_id)
-                    elif b.mass > a.mass * EAT_RATIO:
+                    elif _can_eat(b, a):
                         b.mass += a.mass
                         eaten.add(a.piece_id)
                         break
@@ -142,6 +324,12 @@ def _decay_split_kicks(world: World) -> None:
 
 
 def _remerge_pieces(world: World) -> None:
+    """Fuse same-player pieces that have both timed out and sunk far enough in.
+
+    MERGE_OVERLAP sits past the OWN_PIECE_OVERLAP a cluster rests at, so a pair
+    cannot merge just by being in contact when the timer clears; the merge pull
+    in `_cluster_forces` has to drag them the rest of the way.
+    """
     for player in world.players.values():
         merged = True
         while merged:
@@ -149,11 +337,9 @@ def _remerge_pieces(world: World) -> None:
             for i in range(len(player.pieces)):
                 for j in range(i + 1, len(player.pieces)):
                     a, b = player.pieces[i], player.pieces[j]
-                    if world.now - a.split_time < REMERGE_SECONDS:
+                    if not _merge_ready(world, a) or not _merge_ready(world, b):
                         continue
-                    if world.now - b.split_time < REMERGE_SECONDS:
-                        continue
-                    if not _overlaps(a, b):
+                    if engulfment(a, b) < MERGE_OVERLAP:
                         continue
 
                     total = a.mass + b.mass
@@ -170,17 +356,18 @@ def _remerge_pieces(world: World) -> None:
                     break
 
 
-def try_split(
-    world: World, player: Player, cursor_dx: float, cursor_dy: float
-) -> int:
-    """Split every eligible piece toward the cursor. Returns pieces created.
+def try_split(world: World, player: Player) -> int:
+    """Split every eligible piece along `player.last_input`. Returns pieces created.
+
+    The client's split message carries no direction (build plan section 4), so
+    the stored input is the only thing that can aim the kick. Zero input still
+    splits, just without a kick: the halves land on each other and the separation
+    pass in `_resolve_collisions` pushes them apart on the next tick.
 
     Largest pieces split first, so when MAX_PIECES limits how many splits fit,
     the biggest blobs are the ones that break apart.
     """
-    unit_x, unit_y = _normalized(cursor_dx, cursor_dy)
-    if unit_x == 0.0 and unit_y == 0.0:
-        return 0
+    unit_x, unit_y = _normalized(*player.last_input)
 
     created = 0
     for parent in sorted(player.pieces, key=lambda p: p.mass, reverse=True):
