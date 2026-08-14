@@ -5,6 +5,7 @@ import random
 import uuid
 
 from server.config import (
+    DEFAULT_COLOR,
     FOOD_COUNT,
     INITIAL_PLAYER_MASS,
     WORLD_HEIGHT,
@@ -49,15 +50,21 @@ class World:
     def spawn_player(
         self,
         name: str,
-        x: float,
-        y: float,
+        x: float | None = None,
+        y: float | None = None,
         mass: float = INITIAL_PLAYER_MASS,
+        color: str = DEFAULT_COLOR,
     ) -> Player:
+        if x is None:
+            x = self.rng.uniform(0.0, WORLD_WIDTH)
+        if y is None:
+            y = self.rng.uniform(0.0, WORLD_HEIGHT)
         x, y = clamp_body_position(x, y, mass)
         player = Player(
             id=self.new_id(),
             name=name,
             pieces=[Piece(piece_id=self.new_id(), x=x, y=y, mass=mass)],
+            color=color,
         )
         self.players[player.id] = player
         return player

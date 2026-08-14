@@ -5,6 +5,7 @@ These names are bound by value at import into `server.world` and
 effect; patch `server.world.FOOD_COUNT`, or pass `World(food_target=...)`.
 """
 
+import os
 import time
 
 TICK_RATE = 30
@@ -32,6 +33,15 @@ SIMULATION_CLOCK_SOURCE = time.monotonic
 # on the tick after it. Sim time falls behind real time instead, which is the
 # safe direction.
 MAX_TICK_SECONDS = 0.25
+
+# Bind address for the aiohttp process. 0.0.0.0, not 127.0.0.1: binding
+# localhost would make Phase 7's external test fail in a way
+# indistinguishable from a bad port forward.
+HOST = os.environ.get("BLOBBY_HOST", "0.0.0.0")
+PORT = int(os.environ.get("BLOBBY_PORT", "8000"))
+
+NAME_MAX_LEN = 16
+DEFAULT_COLOR = "#4fc3f7"
 
 WORLD_WIDTH = 1200
 WORLD_HEIGHT = 1200

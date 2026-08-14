@@ -1,140 +1,169 @@
-"""Phase 1 harness: runs the tick loop with two hardcoded players, no networking.
+"""aiohttp game server: static files at `/`, WebSocket at `/ws`, tick loop.
 
-Player A steers toward the nearest food every tick; player B walks a slow
-circle. A is split once at t = 3s so the split -> kick decay -> remerge cycle is
-visible in the console summary. In Phase 2 this file becomes the aiohttp
-entrypoint.
+Bind address is BLOBBY_HOST / BLOBBY_PORT (default 0.0.0.0:8000). The Phase 1
+console harness lives in server.demo.
 """
 
-import asyncio
-import math
-import time
+from __future__ import annotations
 
-from server import simulation
-from server.config import (
-    MAX_TICK_SECONDS,
-    SIMULATION_CLOCK_SOURCE,
-    TICK_RATE,
-    WORLD_HEIGHT,
-    WORLD_WIDTH,
-)
-from server.models import Player
+import asyncio
+import contextlib
+import logging
+import time
+from pathlib import Path
+
+from aiohttp import WSMsgType, web
+
+from server.config import HOST, PORT
+from server.loop import process_tick, tick_loop
+from server.protocol import ClientSession, handle_message, parse_client_message
 from server.world import World
 
-SPLIT_AT_SECONDS = 3.0
-SUMMARY_EVERY_TICKS = 30
-CIRCLE_PERIOD_SECONDS = 6.0
-# The demo players start already grown. A spawn-sized blob has a radius of only
-# ~3.6 units, so it sweeps up food too slowly for mass growth to be legible over
-# the ~20s this harness is meant to be watched for.
-DEMO_MASS = 200
+log = logging.getLogger("blobby")
+
+CLIENT_DIR = Path(__file__).resolve().parent.parent / "client"
+WS_HEARTBEAT_SECONDS = 20.0
+
+WORLD_KEY = web.AppKey("world", World)
+SESSIONS_KEY = web.AppKey("sessions", list)
+STOP_KEY = web.AppKey("stop_ticks", asyncio.Event)
+TASK_KEY = web.AppKey("tick_task", asyncio.Task)
 
 
-def centroid(player: Player) -> tuple[float, float]:
-    if not player.pieces:
-        return 0.0, 0.0
-    total = sum(p.mass for p in player.pieces)
-    if total == 0:
-        return player.pieces[0].x, player.pieces[0].y
-    x = sum(p.x * p.mass for p in player.pieces) / total
-    y = sum(p.y * p.mass for p in player.pieces) / total
-    return x, y
-
-# Handles bot input, calculates the direction this player should move in to reach the nearest food
-def input_toward_nearest_food(world: World, player: Player) -> tuple[float, float]:
-    if not world.food or not player.pieces:
-        return 0.0, 0.0
-    cx, cy = centroid(player)
-    nearest = min(world.food.values(), key=lambda f: (f.x - cx) ** 2 + (f.y - cy) ** 2)
-    dx, dy = nearest.x - cx, nearest.y - cy
-    length = math.hypot(dx, dy)
-    if length == 0.0:
-        return 0.0, 0.0
-    return dx / length, dy / length
+async def _emit(
+    sessions: list[ClientSession],
+    payload: dict,
+    deaths: list[tuple[ClientSession, dict]],
+) -> None:
+    for session in list(sessions):
+        if session.ws is None or session.ws.closed:
+            continue
+        try:
+            await session.ws.send_json(payload)
+        except Exception:
+            continue
+    for session, message in deaths:
+        if session.ws is None or session.ws.closed:
+            continue
+        try:
+            await session.ws.send_json(message)
+        except Exception:
+            continue
 
 
-def _summary_line(world: World, tick: int, a: Player, b: Player) -> str:
-    parts = [f"tick {tick}"]
-    for player in (a, b):
-        masses = ",".join(f"{p.mass:.0f}" for p in player.pieces)
-        x, y = centroid(player)
-        summary = f"{player.name} pieces=[{masses}] pos=({x:.0f},{y:.0f})"
-        if len(player.pieces) > 1:
-            # A centroid hides the split kick entirely, so spell the halves out
-            # while they are apart.
-            spread = " ".join(f"({p.x:.0f},{p.y:.0f})" for p in player.pieces)
-            summary += f" at={spread}"
-        parts.append(summary)
-    parts.append(f"food={len(world.food)}")
-    return " | ".join(parts)
-
-def next_deadline(previous: float, now: float, interval: float) -> float:
-    """When the next tick should wake. Overruns slip rather than bursting."""
-    nxt = previous + interval
-    if nxt < now:
-        return now + interval
-    return nxt
+async def emit_tick(app: web.Application, dt: float) -> None:
+    """Drive one tick and broadcast. Tests use this instead of the wall clock."""
+    payload, deaths = process_tick(app[WORLD_KEY], app[SESSIONS_KEY], dt)
+    await _emit(app[SESSIONS_KEY], payload, deaths)
 
 
-async def sleep_until(
-    deadline: float,
-    clock=SIMULATION_CLOCK_SOURCE,
-    sleep=asyncio.sleep,
-) -> float:
-    """Sleep until `deadline`. Returns the clock reading after the wait."""
-    now = clock()
-    delay = deadline - now
-    if delay > 0.0:
-        await sleep(delay)
-        now = clock()
-    return now
+def _peer(request: web.Request) -> str:
+    return request.remote or "?"
 
 
-async def run() -> None:
-    world = World(seed=time.time_ns())
-    # Equal masses and opposite corners of the world, so neither can eat the
-    # other and the log stays about movement, splitting and remerging.
-    player_a = world.spawn_player("A", WORLD_WIDTH / 4, WORLD_HEIGHT / 2, DEMO_MASS)
-    player_b = world.spawn_player("B", WORLD_WIDTH * 3 / 4, WORLD_HEIGHT / 2, DEMO_MASS)
-    world.spawn_food_to_target_count()
+def _who(session: ClientSession) -> str:
+    if session.player_id is not None:
+        return f"player {session.name!r} id={session.player_id[:8]}"
+    if session.name:
+        return f"menu {session.name!r}"
+    return "spectator"
 
-    tick = 0
-    has_split = False
-    interval = 1.0 / TICK_RATE
-    last = SIMULATION_CLOCK_SOURCE()
-    deadline = last + interval
 
-    while True:
-        now = await sleep_until(deadline)
-        # Sim time advances by measured elapsed time, not by a fixed 1/TICK_RATE,
-        # so the timers stay honest when a tick runs long. Phase 2 keeps this.
-        dt = min(now - last, MAX_TICK_SECONDS)
-        last = now
-        tick += 1
+async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
+    ws = web.WebSocketResponse(heartbeat=WS_HEARTBEAT_SECONDS)
+    await ws.prepare(request)
+    session = ClientSession(ws=ws)
+    sessions: list[ClientSession] = request.app[SESSIONS_KEY]
+    world: World = request.app[WORLD_KEY]
+    sessions.append(session)
+    peer = _peer(request)
+    log.info("connected peer=%s sockets=%d", peer, len(sessions))
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                parsed = parse_client_message(msg.data)
+                if parsed is None:
+                    continue
+                reply = handle_message(world, session, parsed)
+                if reply is not None:
+                    await ws.send_json(reply)
+                    if reply.get("type") == "welcome":
+                        log.info(
+                            "join %s peer=%s players=%d sockets=%d",
+                            _who(session),
+                            peer,
+                            len(world.players),
+                            len(sessions),
+                        )
+            elif msg.type == WSMsgType.ERROR:
+                log.info("websocket error peer=%s %s", peer, ws.exception())
+                break
+            elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING):
+                break
+    finally:
+        try:
+            sessions.remove(session)
+        except ValueError:
+            pass
+        who = _who(session)
+        if session.player_id is not None:
+            world.remove_player(session.player_id)
+            session.player_id = None
+        log.info(
+            "disconnected %s peer=%s sockets=%d", who, peer, len(sessions)
+        )
+    return ws
 
-        player_a.last_input = input_toward_nearest_food(world, player_a)
-        angle = 2.0 * math.pi * world.now / CIRCLE_PERIOD_SECONDS
-        player_b.last_input = (math.cos(angle), math.sin(angle))
 
-        simulation.step(world, dt)
+def create_app(
+    world: World | None = None, *, autotick: bool = True
+) -> web.Application:
+    if world is None:
+        world = World(seed=time.time_ns())
+        world.spawn_food_to_target_count()
 
-        if not has_split and world.now >= SPLIT_AT_SECONDS:
-            # A's input already points at the nearest food this tick, so the
-            # split kick fires that way too.
-            simulation.try_split(world, player_a)
-            has_split = True
+    app = web.Application()
+    app[WORLD_KEY] = world
+    app[SESSIONS_KEY] = []
+    app.router.add_get("/ws", websocket_handler)
+    app.router.add_static("/", CLIENT_DIR, name="client")
 
-        if tick % SUMMARY_EVERY_TICKS == 0:
-            print(_summary_line(world, tick, player_a, player_b))
+    if autotick:
+        app.on_startup.append(_start_ticks)
+        app.on_cleanup.append(_stop_ticks)
+    return app
 
-        deadline = next_deadline(deadline, SIMULATION_CLOCK_SOURCE(), interval)
+
+async def _start_ticks(app: web.Application) -> None:
+    stop = asyncio.Event()
+    app[STOP_KEY] = stop
+
+    async def emit(payload: dict, deaths: list[tuple[ClientSession, dict]]) -> None:
+        await _emit(app[SESSIONS_KEY], payload, deaths)
+
+    app[TASK_KEY] = asyncio.create_task(
+        tick_loop(app[WORLD_KEY], app[SESSIONS_KEY], emit=emit, stop=stop)
+    )
+
+
+async def _stop_ticks(app: web.Application) -> None:
+    stop = app.get(STOP_KEY)
+    if stop is not None:
+        stop.set()
+    task = app.get(TASK_KEY)
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 def main() -> None:
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        print("\nstopped")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    web.run_app(create_app(), host=HOST, port=PORT)
 
 
 if __name__ == "__main__":

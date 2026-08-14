@@ -24,7 +24,7 @@ Where a number appears below it was measured, not estimated. Re-measure before y
 
 Done before Phase 2: A1, A3, A4 (Phase 4 wording already matched), A5, A7 except hysteresis, plus the D/E items called out as done on those bullets.
 
-Still deferred: A2 (kick scale — after Phase 3), A6 (food grid — before Phase 6), A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot), E requirements split (lands with aiohttp in Phase 2).
+Still deferred: A2 (kick scale — after Phase 3), A6 (food grid — before Phase 6), A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot). E (requirements split) landed with aiohttp in Phase 2.
 
 ---
 
@@ -228,7 +228,7 @@ The suite is strong on the spec'd behaviours. The gaps are compositional and adv
 
 ## E. Housekeeping
 
-- **`requirements.txt` is unpinned and mixes concerns.** `pytest` alone is correct for Phase 1 and nothing is missing, but Phase 7's `vm_bootstrap.sh` will `pip install -r requirements.txt` on the game server and drag pytest onto it. Pin versions, and split a `requirements-dev.txt` when `aiohttp` lands in Phase 2.
+- **`requirements.txt` is unpinned and mixes concerns.** — **done**. `requirements.txt` is pinned `aiohttp`; `requirements-dev.txt` pulls that in plus pinned `pytest`. Phase 7's `vm_bootstrap.sh` can `pip install -r requirements.txt` without dragging pytest onto the game server.
 - **`test_tick_rate.py` is misnamed and disconnected from `TICK_RATE`.** — **done** (renamed `test_dt_invariance.py`; the loop rate is pinned in `test_main.py`).
 - **`World.food_target` is passed by nothing outside the recorder** — **done**. The `world` fixture is now `World(seed=0, food_target=0)`.
 - **Config values are bound at import time.** — **done** (note in `config.py`).

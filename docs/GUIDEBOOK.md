@@ -26,6 +26,9 @@ The source plan is the authority on scope. Where this build adds to it, it is re
 - **A simulation clock.** The source plan never says where "now" comes from. See [Simulation clock](#simulation-clock).
 - **Verification tooling.** `tests/`, `tools/` and the browser viewer are not in the source plan. See [Verification tooling](#verification-tooling-phase-1).
 - **Phase 3 render core built early.** `client/render.js` and `client/style.css` were written during Phase 1 so the viewer had something to draw with. That breaks the "each phase before the next" rule; it is recorded here so the rule's failure is visible rather than assumed.
+- **Greeting menu, color, and death.** Source section 4 has `join` / `input` / `split` and a `state` broadcast of `{id, name, pieces}`. Connecting here does not spawn. `join` carries a player-chosen `color`; the server replies with `welcome` `{id}` so a client can follow-cam without matching on name. A last-piece eat removes the player from the world and sends `game_over` `{peak_mass, survival_seconds}` on that socket only. The next `join` on the same socket is a respawn. Spectating is connecting and never sending `join`. Phase 3 owns the menu and Game Over UI; Phase 2 owns the protocol so that UI can exist. `state` players also carry `color`.
+- **Phase 1 console harness lives in `server/demo.py`.** Phase 2 rewrote `server/main.py` as the aiohttp entrypoint. `python -m server.demo` is the old two-player printout.
+- **Runtime vs dev requirements.** `requirements.txt` is pinned `aiohttp` only, so Phase 7's VM bootstrap does not install pytest. Tests install from `requirements-dev.txt`.
 
 ---
 
@@ -77,13 +80,13 @@ Because the clock lives on the world rather than in a module global, a scenario 
   8. Respawn food up to `FOOD_COUNT`.
 
   Also expose `try_split(world, player)`, which aims the kick along `player.last_input` (the wire message carries no direction), splits **every** piece at or above `MIN_SPLIT_MASS` largest-first in one call, and stops at `MAX_PIECES`. Note this exceeds source plan section 5, which describes splitting a single piece.
-- [x] **[Agent]** `server/main.py` — `asyncio` loop sleeping to a tick deadline (remainder of `1/TICK_RATE`, slipping on overrun rather than bursting), calling `simulation.step` with measured elapsed time per the clock contract above. Builds a `World` with 2 hardcoded players: **A** whose `last_input` is recomputed each tick to point at the nearest food, **B** moving in a slow circle. Both start at `DEMO_MASS`, well above spawn size, so mass growth is legible over the short watch. Every ~30 ticks (~1s), prints one summary line: `tick N | A pieces=[m1,m2] pos=(x,y) | B pieces=[m3] pos=(x,y) | food=K`, where a player holding more than one piece also gets ` at=(x,y) (x,y)` — a centroid alone cannot show a split, since two symmetric halves have the same centroid as the whole. After ~3s, call `try_split` on A once so splitting → decay → remerge is visible. Ctrl+C exits cleanly.
+- [x] **[Agent]** `server/demo.py` — the Phase 1 console harness (originally `server/main.py`). `asyncio` loop sleeping to a tick deadline (remainder of `1/TICK_RATE`, slipping on overrun rather than bursting), calling `simulation.step` with measured elapsed time per the clock contract above. Builds a `World` with 2 hardcoded players: **A** whose `last_input` is recomputed each tick to point at the nearest food, **B** moving in a slow circle. Both start at `DEMO_MASS`, well above spawn size, so mass growth is legible over the short watch. Every ~30 ticks (~1s), prints one summary line: `tick N | A pieces=[m1,m2] pos=(x,y) | B pieces=[m3] pos=(x,y) | food=K`, where a player holding more than one piece also gets ` at=(x,y) (x,y)` — a centroid alone cannot show a split, since two symmetric halves have the same centroid as the whole. After ~3s, call `try_split` on A once so splitting → decay → remerge is visible. Ctrl+C exits cleanly. Phase 2's `server/main.py` is the aiohttp entrypoint.
 
 ### Verification tooling (Phase 1)
 
 Not in the source plan. It exists because half the Phase 1 checklist is about motion, and motion cannot be judged from a console.
 
-- [x] **[Agent]** `tests/` — `test_simulation.py` covers every deterministic box below; `test_dt_invariance.py` additionally pins that the same sim time produces the same state at 15Hz / `TICK_RATE` / 60Hz, so nothing quietly becomes frame-rate dependent; `test_main.py` pins the harness helpers, the exact summary line format above, and that the tick loop runs at `TICK_RATE`.
+- [x] **[Agent]** `tests/` — `test_simulation.py` covers every deterministic box below; `test_dt_invariance.py` additionally pins that the same sim time produces the same state at 15Hz / `TICK_RATE` / 60Hz, so nothing quietly becomes frame-rate dependent; `test_main.py` pins the harness helpers in `server/demo.py` and `server/loop.py`, the exact summary line format above, and that the tick loop runs at `TICK_RATE`.
 - [x] **[Agent]** `tools/scenarios.py` + `tools/record.py` — one scripted, seeded scenario per verify box, recording real `simulation.step` output to `client/recordings/` (generated artifacts, gitignored).
 - [x] **[Agent]** `client/render.js` — snapshot renderer, camera, interpolation, plus debug overlays for velocity and merge-readiness. **Survives into Phase 3**, where `game.js` imports it as-is.
 - [x] **[Agent]** `client/viewer.html`, `client/viewer.js`, `client/recording.js`, and the viewer half of `client/style.css` — Phase 1 scaffolding. Fate decided in Phase 3.
@@ -132,7 +135,7 @@ Tick "I saw this behave correctly" per scenario; the sidebar tracks the count. T
 **3. Free-running smoke test — [Both]**
 
 ```
-python -m server.main
+python -m server.demo
 ```
 
 Watch for ~18 seconds. This confirms nothing crashes over a sustained run:
@@ -163,24 +166,42 @@ None of it blocks Phase 2, and some of it is better done *after* Phase 3, when t
 
 Goal: put the tick loop behind an aiohttp WebSocket endpoint and confirm the protocol round-trips using a bare Python client that just prints received state.
 
-- [ ] **[Agent]** Add `aiohttp` to `requirements.txt`.
-- [ ] **[Both]** `pip install -r requirements.txt` (or into a venv).
-- [ ] **[Agent]** Rewrite `server/main.py` as an aiohttp app: static file serving mounted at `/`, WebSocket upgrade at `/ws`, tick loop as an asyncio task alongside the HTTP server. Single port (8000).
-- [ ] **[Agent]** Bind `0.0.0.0`, not `127.0.0.1`, with host and port from environment variables defaulting to the current values. Phase 7's external test cannot pass otherwise, and the failure is indistinguishable from a bad port forward.
-- [ ] **[Agent]** Server → client broadcast every tick, using the exact shape from source plan section 4.
-- [ ] **[Agent]** Client → server messages: `join`, `input`, `split`. Store `last_input` per player and consume it on the next tick.
-- [ ] **[Agent]** Reject `input` messages whose `dx`/`dy` are not finite, at the message boundary. The simulation drops them too, but a client sending them is a client to distrust.
-- [ ] **[Agent]** `join` picks a spawn position and spawns at `INITIAL_PLAYER_MASS`. Phase 1 supplied coordinates by hand; nothing does that for a real player.
-- [ ] **[Agent]** Decide and implement what happens to a player whose last piece is eaten — respawn at `INITIAL_PLAYER_MASS`, or hold as a spectator with an empty piece list. The simulation already produces this state and leaves the player in the world, so without a decision the broadcast emits ghosts. Phase 4's exit criterion cannot be reached until this exists.
-- [ ] **[Agent]** On socket close, call `world.remove_player`. Without it every closed tab leaves a frozen blob in the world forever.
-- [ ] **[Agent]** Keep advancing sim time on measured elapsed time with the `MAX_TICK_SECONDS` clamp, exactly as Phase 1 does — not a fixed `1/TICK_RATE`. `tests/test_dt_invariance.py` covers this and must still pass after the rewrite.
-- [ ] **[Agent]** Keep the tick's state-mutation section synchronous — no `await` mid-mutation (source plan section 3).
-- [ ] **[Agent]** `tools/probe_client.py` — bare Python WebSocket client: connects, sends `join`, prints one line per received `state` message, sends fake `input` occasionally.
-- [ ] **[Agent]** Run server + probe client and confirm the probe sees state broadcasts and its inputs are reflected in the state on the next tick.
+- [x] **[Agent]** Add `aiohttp` to `requirements.txt`. Runtime deps are pinned there; pytest lives in `requirements-dev.txt`.
+- [ ] **[Both]** `pip install -r requirements-dev.txt` (or into a venv).
+- [x] **[Agent]** Rewrite `server/main.py` as an aiohttp app: static file serving mounted at `/`, WebSocket upgrade at `/ws`, tick loop as an asyncio task alongside the HTTP server. Single port (8000). The Phase 1 printout moved to `server/demo.py`.
+- [x] **[Agent]** Bind `0.0.0.0`, not `127.0.0.1`, with `BLOBBY_HOST` / `BLOBBY_PORT` defaulting to `0.0.0.0:8000`. Phase 7's external test cannot pass otherwise, and the failure is indistinguishable from a bad port forward.
+- [x] **[Agent]** Server → client broadcast every tick. `state` is source plan section 4 plus `color` on each player (see Divergence). Pieces stay `{piece_id, x, y, mass}`.
+- [x] **[Agent]** Client → server messages: `join` (`name` + `color`), `input`, `split`. Connecting does not spawn. Store `last_input` per player and consume it on the next tick.
+- [x] **[Agent]** `welcome` `{id}` to that socket after a successful join, so Phase 3 can follow-cam without matching on name.
+- [x] **[Agent]** Reject `input` messages whose `dx`/`dy` are not finite, at the message boundary. The simulation drops them too, but a client sending them is a client to distrust. Malformed JSON is dropped; the connection stays up.
+- [x] **[Agent]** `join` picks a spawn position from the world RNG and spawns at `INITIAL_PLAYER_MASS`. Phase 1 supplied coordinates by hand; nothing did that for a real player.
+- [x] **[Agent]** Last piece eaten: remove the player from the world so the broadcast cannot emit ghosts, and send `game_over` `{peak_mass, survival_seconds}` to that socket. The socket stays open. The next `join` is a respawn (Customize changes name/color first; Respawn resends the last ones). Spectating is connecting and never sending `join`.
+- [x] **[Agent]** On socket close, call `world.remove_player`. Without it every closed tab leaves a frozen blob in the world forever.
+- [x] **[Agent]** Keep advancing sim time on measured elapsed time with the `MAX_TICK_SECONDS` clamp, exactly as Phase 1 does — not a fixed `1/TICK_RATE`. `tests/test_dt_invariance.py` covers this and still passes.
+- [x] **[Agent]** Keep the tick's state-mutation section synchronous — no `await` mid-mutation (source plan section 3).
+- [x] **[Agent]** `tools/probe_client.py` — bare Python WebSocket client: connects, sends `join` unless `--spectate`, prints one line per received `state` / `welcome` / `game_over`, sends fake `input` occasionally.
+- [x] **[Agent]** Run server + probe client and confirm the probe sees state broadcasts and its inputs are reflected in the state on the next tick.
+
+### How to verify
+
+```
+python -m pytest
+python -m server.main
+```
+
+The server logs one line on connect, one on `join`, and one on disconnect. Restart `python -m server.main` to pick up that logging if it is already running.
+
+Then in other terminals:
+
+```
+python -m tools.probe_client --name A
+python -m tools.probe_client --name B
+python -m tools.probe_client --spectate
+```
 
 ### Phase 2 exit criteria
 
-- [ ] **[Human]** Protocol round-trips cleanly with two probe clients connected at once. No log spam, no dropped connections on idle, and a probe that disconnects leaves no blob behind.
+- [ ] **[Human]** Protocol round-trips cleanly with two probe clients connected at once. No log spam, no dropped connections on idle, and a probe that disconnects leaves no blob behind. A spectator (`--spectate`) sees those players and never appears in `players`.
 
 ---
 
@@ -188,16 +209,18 @@ Goal: put the tick loop behind an aiohttp WebSocket endpoint and confirm the pro
 
 Goal: one browser tab can move and eat food against a localhost server.
 
-- [ ] **[Agent]** `client/index.html` — canvas element, minimal chrome, name-entry field.
-- [ ] **[Agent]** Extend the existing `client/style.css` (written in Phase 1 for the viewer) with the full-window game canvas rules. Do not recreate it; the two pages share it.
-- [ ] **[Agent]** `client/game.js`, importing `client/render.js` unchanged:
+- [ ] **[Agent]** `client/index.html` — greeting menu over a full-window canvas: name field, color picker, **Play**, **Spectate**. Play sends `join` with the chosen name and color. Spectate never sends `join`; the tab only receives `state`.
+- [ ] **[Agent]** Extend the existing `client/style.css` (written in Phase 1 for the viewer) with the full-window game canvas rules and the menu / Game Over overlay. Do not recreate it; the two pages share it.
+- [ ] **[Agent]** `client/game.js`, importing `client/render.js`:
   - `requestAnimationFrame` render loop, decoupled from server tick rate.
-  - WebSocket connection to `/ws`; send `join` on open.
-  - Mouse position → normalized `dx/dy` relative to player center; send throttled to ~20/sec.
-  - Camera centered on the player's piece centroid, zooming out as total mass grows — `followCamera` in `render.js` already does this.
-  - **Interpolation between the last two received state snapshots** (source plan section 6 flags this as non-optional). `interpolateStates` in `render.js` does the blend; `game.js` owns the part that isn't there yet — buffering the last two snapshots and deciding the blend factor from elapsed time, absorbing a late or dropped tick.
+  - WebSocket connection to `/ws`. Do **not** send `join` on open — wait for Play. After `welcome`, follow-cam on that id.
+  - Mouse position → normalized `dx/dy` relative to player center; send throttled to ~20/sec. Ignored while spectating or on the menu.
+  - Camera centered on the followed piece centroid, zooming out as total mass grows — `followCamera` in `render.js` already does this.
+  - **Interpolation between the last two received state snapshots** (source plan section 6 flags this as non-optional). `interpolateStates` in `render.js` does the blend; `game.js` owns buffering the last two snapshots and deciding the blend factor from elapsed time, absorbing a late or dropped tick. **`interpolateStates` currently strips unknown player fields — pass `color` through.** Drawing should prefer `player.color` over `colorForId`.
+  - On `game_over`: overlay "Game Over!" with peak mass and survival time, plus **Customize** (back to the greeting menu) and **Respawn** (send `join` again with the last name and color).
+  - Spectate: mouse click cycles or focuses another player's blob without spawning this client.
 - [ ] **[Agent]** Decide the fate of `client/viewer.*`, `client/recording.js` and `tools/record.py`: keep as a regression harness, or delete. Do not leave it ambiguous.
-- [ ] **[Human]** Start server, open `http://localhost:8000`, confirm you can move around and eat food. Mass shown numerically somewhere for sanity.
+- [ ] **[Human]** Start server, open `http://localhost:8000`, set a name and color, Play, confirm you can move around and eat food. Mass shown numerically somewhere for sanity. Confirm Spectate does not spawn a blob, and that dying shows Game Over with working Customize / Respawn.
 
 ### Phase 3 exit criteria
 
@@ -213,7 +236,7 @@ Goal: two players can see and eat each other.
 - [ ] **[Human]** Open two browser tabs at `http://localhost:8000`, use different names.
 - [ ] **[Human]** Confirm each tab renders the other player.
 - [ ] **[Human]** Grow one blob well past the other and confirm it can eat the smaller one (subject to the 1.25 mass ratio). Note that a heavier blob is *slower*, so walking into fleeing prey will not catch it — corner it, or split into it.
-- [ ] **[Human]** Confirm a fully-eaten player does whatever Phase 2 decided (respawn or spectate), in both tabs.
+- [ ] **[Human]** Confirm a fully-eaten player sees Game Over with peak mass and survival time, and can Customize or Respawn, in both tabs.
 - [ ] **[Agent]** Fix any bugs surfaced (state broadcast omissions, race conditions, wrong ownership checks, etc.) as you report them.
 
 ### Phase 4 exit criteria
@@ -246,7 +269,7 @@ Goal: spacebar splits, following the section 5 rules verified in Phase 1.
 Goal: N Python bot clients playing autonomously.
 
 - [ ] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
-- [ ] **[Agent]** Decision loop: from the most recent received state, move toward the nearest edible entity (food or a smaller player); flee if a larger player is closer than the nearest edible target. No pathfinding. `input_toward_nearest_food` in the Phase 1 harness is the seed of this.
+- [ ] **[Agent]** Decision loop: from the most recent received state, move toward the nearest edible entity (food or a smaller player); flee if a larger player is closer than the nearest edible target. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the seed of this.
 - [ ] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world.
 - [ ] **[Human]** Play against them in a browser tab. Confirm bots don't deadlock, don't spin in place, and don't crash on player disconnect.
 

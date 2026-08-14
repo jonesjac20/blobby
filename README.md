@@ -2,17 +2,22 @@
 
 An agar.io-style multiplayer game. Authoritative Python server, browser + Python-bot clients, WebSocket/JSON protocol. Runs as a POC on a local Ubuntu VM.
 
-Phase 1 is built: the simulation runs standalone, with no networking yet. Movement, food, the 1.25x eat rule, splitting, the split kick and remerging all work and are covered by tests. Everything the project intends to do, along with a phased checklist and where things currently stand, lives in [docs/GUIDEBOOK.md](docs/GUIDEBOOK.md).
+Phase 2 is built: the simulation from Phase 1 now sits behind an aiohttp WebSocket server. A browser client is Phase 3. Everything the project intends to do, along with a phased checklist and where things currently stand, lives in [docs/GUIDEBOOK.md](docs/GUIDEBOOK.md).
 
 ## Run it
 
 ```
-python -m pytest              # the Phase 1 test suite
-python -m server.main         # the console harness: two players, ~18s is enough to see a split and a remerge
-python -m tools.record --serve  # record every verification scenario and open the browser viewer
+pip install -r requirements-dev.txt
+python -m pytest                 # simulation, protocol, and WebSocket tests
+python -m server.main            # game server: static files at /, WebSocket at /ws (0.0.0.0:8000)
+python -m tools.probe_client --name A
+python -m server.demo            # Phase 1 console harness: two hardcoded players, no networking
+python -m tools.record --serve   # record every verification scenario and open the browser viewer
 ```
 
-Only `pytest` is needed; the server itself is standard library so far.
+`BLOBBY_HOST` and `BLOBBY_PORT` override the bind address (default `0.0.0.0:8000`). A spectator probe uses `--spectate` and never sends `join`.
+
+Runtime-only install (no pytest):
 
 ```
 pip install -r requirements.txt
@@ -21,9 +26,9 @@ pip install -r requirements.txt
 ## Layout
 
 - `docs/` — the build guidebook and the source build plan it follows.
-- `server/` — Python game server. Phase 1 is the simulation and a console harness; aiohttp and the WebSocket endpoint arrive in Phase 2.
-- `client/` — browser code. Currently the Phase 1 verification viewer plus `render.js`, the shared canvas renderer the Phase 3 game client will import.
-- `tools/` — the scenario recorder that feeds the viewer.
+- `server/` — Python game server. `main.py` is the aiohttp process; `demo.py` is the Phase 1 printout; `simulation.py` / `world.py` are unchanged from Phase 1.
+- `client/` — browser code. Currently the Phase 1 verification viewer plus `render.js`, the shared canvas renderer the Phase 3 game client will import. Served by the game server at `/`.
+- `tools/` — the scenario recorder, plus `probe_client.py` for Phase 2 protocol checks.
 - `tests/` — pytest suites.
 - `bots/` — Python bot clients (Phase 6).
 

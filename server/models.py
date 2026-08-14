@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from server.config import REMERGE_SECONDS
+from server.config import DEFAULT_COLOR, REMERGE_SECONDS
 
 
 @dataclass
@@ -26,6 +26,7 @@ class Player:
     name: str
     pieces: list[Piece] = field(default_factory=list)
     last_input: tuple[float, float] = (0.0, 0.0)
+    color: str = DEFAULT_COLOR
 
 
 @dataclass

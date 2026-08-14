@@ -24,6 +24,7 @@ from server.config import (
     speed_for_mass,
 )
 from server.models import Food
+from server.world import World
 
 TICK = 1.0 / 30.0
 
@@ -810,6 +811,23 @@ def test_spawn_player_clamps_into_the_world(world):
 
     assert piece.x == pytest.approx(radius)
     assert piece.y == pytest.approx(WORLD_HEIGHT - radius)
+
+
+def test_spawn_player_without_coordinates_is_seeded_and_in_bounds():
+    radius = simulation.radius_for_mass(INITIAL_PLAYER_MASS)
+    first = World(seed=0, food_target=0).spawn_player("a")
+    second = World(seed=0, food_target=0).spawn_player("a")
+    piece = first.pieces[0]
+
+    assert (piece.x, piece.y) == (second.pieces[0].x, second.pieces[0].y)
+    assert radius <= piece.x <= WORLD_WIDTH - radius
+    assert radius <= piece.y <= WORLD_HEIGHT - radius
+
+
+def test_spawn_player_stores_color(world):
+    player = world.spawn_player("painted", 100.0, 100.0, color="#ff0000")
+
+    assert player.color == "#ff0000"
 
 
 def test_new_id_is_32_hex_chars(world):

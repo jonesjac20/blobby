@@ -1,9 +1,8 @@
-"""Covers the Phase 1 console harness in server/main.py.
+"""Covers the Phase 1 console harness in server/demo.py.
 
 The summary line format is quoted verbatim in the guidebook, so it is pinned
-here. Phase 2 replaces this module's tick loop, but `centroid` and the
-nearest-food steering graduate into the state broadcast and the bots rather than
-being deleted with it.
+here. The aiohttp tick loop lives in server.loop; centroid and nearest-food
+steering stay with the demo until they graduate into the bots.
 """
 
 import asyncio
@@ -13,13 +12,12 @@ import pytest
 from conftest import add_piece, add_player
 
 from server.config import TICK_RATE
-from server.main import (
+from server.demo import (
     _summary_line,
     centroid,
     input_toward_nearest_food,
-    next_deadline,
-    sleep_until,
 )
+from server.loop import next_deadline, sleep_until
 from server.models import Food
 
 # --- centroid -------------------------------------------------------------
