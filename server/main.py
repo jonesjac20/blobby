@@ -11,7 +11,13 @@ import math
 import time
 
 from server import simulation
-from server.config import TICK_RATE, WORLD_HEIGHT, WORLD_WIDTH
+from server.config import (
+    MAX_TICK_SECONDS,
+    SIMULATION_CLOCK_SOURCE,
+    TICK_RATE,
+    WORLD_HEIGHT,
+    WORLD_WIDTH,
+)
 from server.models import Player
 from server.world import World
 
@@ -22,9 +28,6 @@ CIRCLE_PERIOD_SECONDS = 6.0
 # ~3.6 units, so it sweeps up food too slowly for mass growth to be legible over
 # the ~20s this harness is meant to be watched for.
 DEMO_MASS = 200
-# A single hitch (debugger pause, laptop sleep) shouldn't teleport every blob
-# across the map, so cap how much sim time one tick may advance.
-MAX_TICK_SECONDS = 0.25
 
 
 def centroid(player: Player) -> tuple[float, float]:
@@ -65,7 +68,7 @@ def _summary_line(world: World, tick: int, a: Player, b: Player) -> str:
     parts.append(f"food={len(world.food)}")
     return " | ".join(parts)
 
-
+# Main game loop
 async def run() -> None:
     world = World(seed=time.time_ns())
     # Equal masses and opposite corners of the world, so neither can eat the
@@ -76,12 +79,14 @@ async def run() -> None:
 
     tick = 0
     has_split = False
-    last = time.monotonic()
+    last = SIMULATION_CLOCK_SOURCE()
 
     while True:
         await asyncio.sleep(1.0 / TICK_RATE)
 
-        now = time.monotonic()
+        # Sim time advances by measured elapsed time, not by a fixed 1/TICK_RATE,
+        # so the timers stay honest when a tick runs long. Phase 2 keeps this.
+        now = SIMULATION_CLOCK_SOURCE()
         dt = min(now - last, MAX_TICK_SECONDS)
         last = now
         tick += 1

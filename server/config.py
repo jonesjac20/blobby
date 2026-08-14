@@ -1,11 +1,32 @@
 """Simulation constants from build plan section 5, plus world/tuning values."""
 
+import time
+
 TICK_RATE = 30
 MIN_SPLIT_MASS = 35
 MAX_PIECES = 8
 EAT_RATIO = 1.25
 REMERGE_SECONDS = 12
 SPLIT_KICK_DECAY_SECONDS = 0.5
+
+# --- simulation clock ------------------------------------------------------
+#
+# The server owns time. Every timer in the simulation - the remerge wait, the
+# kick decay - is measured against World.now, which nothing but simulation.step
+# advances and only ever by an interval the server itself measured from the
+# source below. No message on the wire carries or influences a timestamp, so a
+# client cannot run its clock fast to reach a remerge or shed a split kick early,
+# and two clients cannot disagree about when anything happened.
+#
+# Named here rather than called inline so the whole server reads one clock: a
+# monotonic one, which cannot jump backwards when the host's wall clock is
+# corrected mid-game.
+SIMULATION_CLOCK_SOURCE = time.monotonic
+# Ceiling on how much sim time a single tick may advance. A hitch - a debugger
+# pause, a laptop waking up - would otherwise teleport every blob across the map
+# on the tick after it. Sim time falls behind real time instead, which is the
+# safe direction.
+MAX_TICK_SECONDS = 0.25
 
 WORLD_WIDTH = 1200
 WORLD_HEIGHT = 1200

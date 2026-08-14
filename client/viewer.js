@@ -2,9 +2,9 @@
  * Phase 1 verification viewer.
  *
  * Drives the shared renderer from recorded frames instead of a live socket, so
- * every [Both] checklist item in GUIDEBOOK.md can be watched, paused and
- * stepped through a frame at a time. The Phase 3 client will swap this file for
- * one that feeds `render.js` from a WebSocket; render.js itself stays put.
+ * every verify box in docs/GUIDEBOOK.md can be watched, paused and stepped
+ * through a frame at a time. The Phase 3 client will swap this file for one that
+ * feeds `render.js` from a WebSocket; render.js itself stays put.
  */
 
 import { RecordingCursor } from "./recording.js";
@@ -24,6 +24,7 @@ import {
 
 const RECORDINGS = "./recordings";
 const STORAGE_KEY = "blobby.phase1.verified";
+const SPEEDS = [0.1, 0.25, 0.5, 1, 2];
 
 const el = {
   list: document.getElementById("scenario-list"),
@@ -57,19 +58,39 @@ const state = {
   position: 0,
   playing: false,
   speed: 1,
+  /** Set when `draw` throws, so the loop stops retrying a doomed frame. */
+  broken: false,
   verified: loadVerified(),
 };
 
 // --- data ------------------------------------------------------------------
 
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+/** Report a dead end in the header rather than failing silently. */
+function showFailure(title, detail) {
+  el.title.textContent = title;
+  el.checklist.textContent = detail;
+  el.expect.textContent = "";
+}
+
 async function boot() {
-  const response = await fetch(`${RECORDINGS}/index.json`);
-  if (!response.ok) {
-    el.title.textContent = "No recordings found";
-    el.checklist.textContent = "Run: python -m tools.record";
+  let index;
+  try {
+    index = (await fetchJson(`${RECORDINGS}/index.json`)).scenarios;
+  } catch (error) {
+    showFailure("No recordings found", `Run: python -m tools.record (${error.message})`);
     return;
   }
-  state.index = (await response.json()).scenarios;
+  if (!index || !index.length) {
+    showFailure("No recordings found", "Run: python -m tools.record");
+    return;
+  }
+  state.index = index;
   renderScenarioList();
   updateVerifiedCount();
   await select(state.index[0].id);
@@ -77,8 +98,22 @@ async function boot() {
 
 async function select(id) {
   const meta = state.index.find((entry) => entry.id === id);
-  const response = await fetch(`${RECORDINGS}/${id}.json`);
-  state.recording = await response.json();
+  let recording;
+  try {
+    recording = await fetchJson(`${RECORDINGS}/${id}.json`);
+  } catch (error) {
+    state.recording = state.cursor = null;
+    showFailure(meta ? meta.title : id, `Could not load this recording: ${error.message}.`);
+    return;
+  }
+  if (!recording.frames || !recording.frames.length) {
+    state.recording = state.cursor = null;
+    showFailure(meta ? meta.title : id, "This recording has no frames. Re-run: python -m tools.record");
+    return;
+  }
+
+  state.broken = false;
+  state.recording = recording;
   state.cursor = new RecordingCursor(state.recording);
   state.position = 0;
   state.playing = false;
@@ -88,8 +123,9 @@ async function select(id) {
   el.expect.textContent = meta.expect;
   el.timeline.max = String(state.recording.frames.length - 1);
   el.timeline.value = "0";
-  el.speed.value = String(state.recording.speed ?? 1);
-  state.speed = Number(el.speed.value);
+  const recorded = Number(state.recording.speed ?? 1);
+  state.speed = Number.isFinite(recorded) && recorded > 0 ? recorded : 1;
+  renderSpeedOptions(state.speed);
   el.verified.checked = Boolean(state.verified[id]);
 
   renderScenarioList();
@@ -115,6 +151,24 @@ function seek(index) {
   el.timeline.value = String(Math.floor(state.position));
 }
 
+/**
+ * Rebuild the ladder so the recording's own speed always has an entry. Assigning
+ * a value with no matching option leaves the select blank, and `Number("")` is
+ * 0, which stalls playback outright.
+ */
+function renderSpeedOptions(speed) {
+  const values = SPEEDS.includes(speed) ? SPEEDS : [...SPEEDS, speed].sort((a, b) => a - b);
+  el.speed.replaceChildren(
+    ...values.map((value) => {
+      const option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = `${value}x`;
+      option.selected = value === speed;
+      return option;
+    })
+  );
+}
+
 function frameCamera() {
   const { viewport } = resizeCanvas(el.canvas);
   if (!state.recording) return;
@@ -125,21 +179,30 @@ function frameCamera() {
 let lastTimestamp = 0;
 
 function tick(timestamp) {
+  // Rescheduled first: a throw below must not take the render loop down with it.
+  requestAnimationFrame(tick);
+
   const dt = lastTimestamp ? Math.min((timestamp - lastTimestamp) / 1000, 0.1) : 0;
   lastTimestamp = timestamp;
 
-  if (state.cursor) {
-    if (state.playing) {
-      state.position += dt * state.recording.tickRate * state.speed;
-      if (state.position >= frameCount() - 1) {
-        state.position = frameCount() - 1;
-        setPlaying(false);
-      }
-      el.timeline.value = String(Math.floor(state.position));
+  if (!state.cursor || state.broken) return;
+  if (state.playing) {
+    state.position += dt * state.recording.tickRate * state.speed;
+    if (state.position >= frameCount() - 1) {
+      state.position = frameCount() - 1;
+      setPlaying(false);
     }
-    draw(dt);
+    el.timeline.value = String(Math.floor(state.position));
   }
-  requestAnimationFrame(tick);
+
+  try {
+    draw(dt);
+  } catch (error) {
+    state.broken = true;
+    setPlaying(false);
+    showFailure("Could not render this recording", String(error));
+    console.error(error);
+  }
 }
 
 // --- rendering ---------------------------------------------------------------
@@ -149,14 +212,20 @@ function draw(dt) {
   const cursor = state.cursor;
 
   const i = Math.min(Math.floor(state.position), cursor.frameCount - 1);
-  const j = Math.min(i + 1, cursor.frameCount - 1);
   const alpha = state.position - i;
 
-  // Food never moves, so both snapshots can share the newer list. That keeps
-  // this to one delta walk per rendered frame.
-  const next = cursor.stateAt(j);
-  const previous = { type: "state", players: cursor.frameAt(i).players, food: next.food };
-  const snapshot = interpolateStates(previous, next, alpha);
+  // stateAt(i) has to come first: seeking backwards makes the cursor replay the
+  // food deltas from frame 0, so asking for i+1 before i would replay the whole
+  // recording on every rendered frame.
+  const previous = cursor.stateAt(i);
+  // Parked on a frame - which every pause and every step lands on - the frame is
+  // rendered exactly as recorded, so the overlays and the clock below describe
+  // the same tick as the bodies. Only playback blends, and there a piece created
+  // by a split appears up to a tick early, per `interpolateStates`.
+  const snapshot =
+    alpha > 0 && i + 1 < cursor.frameCount
+      ? interpolateStates(previous, cursor.stateAt(i + 1), alpha)
+      : previous;
 
   if (el.followCam.checked) {
     const biggest = [...snapshot.players]
@@ -352,4 +421,4 @@ function escapeHtml(value) {
 }
 
 requestAnimationFrame(tick);
-boot();
+boot().catch((error) => showFailure("Viewer failed to start", String(error)));

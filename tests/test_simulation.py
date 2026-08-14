@@ -1,4 +1,4 @@
-"""Covers every item on the Phase 1 verify list in GUIDEBOOK.md."""
+"""Covers every item on the Phase 1 verify list in docs/GUIDEBOOK.md."""
 
 import math
 
@@ -8,6 +8,7 @@ from conftest import add_piece, add_player, advance, split
 from server import simulation
 from server.config import (
     EAT_OVERLAP,
+    EAT_RATIO,
     FOOD_COUNT,
     FOOD_MASS,
     MAX_PIECES,
@@ -74,6 +75,41 @@ def test_unnormalized_input_moves_at_full_speed(world):
     simulation.step(world, TICK)
 
     assert unit.pieces[0].x == pytest.approx(short.pieces[0].x)
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [
+        (float("nan"), 0.0),
+        (0.0, float("nan")),
+        (float("nan"), float("nan")),
+        (float("inf"), 0.0),
+        (float("-inf"), 1.0),
+    ],
+)
+def test_non_finite_input_is_ignored(world, direction):
+    player = add_player(world, x=500.0, y=500.0, last_input=direction)
+    piece = player.pieces[0]
+
+    advance(world, 1.0, TICK)
+
+    assert (piece.x, piece.y) == (500.0, 500.0)
+
+
+def test_non_finite_input_cannot_spread_to_another_player(world):
+    """NaN fails every threshold test, so it used to leak out through collisions.
+
+    `_project_apart` separates this overlapping pair, and a NaN center would slip
+    past its `distance >= target` bail and write NaN into the neighbour.
+    """
+    bad = add_player(world, "bad", 500.0, 500.0, mass=100, last_input=(float("nan"), 0.0))
+    good = add_player(world, "good", 505.0, 500.0, mass=100, last_input=(0.0, 0.0))
+
+    advance(world, 1.0, TICK)
+
+    for piece in (*bad.pieces, *good.pieces):
+        assert math.isfinite(piece.x)
+        assert math.isfinite(piece.y)
 
 
 def test_speed_for_mass_decreases_as_mass_grows():
@@ -153,14 +189,25 @@ def test_food_count_stays_at_target_over_time(world_with_food):
 
 
 @pytest.mark.parametrize(
+    "predator_first", [True, False], ids=["predator-joins-first", "prey-joins-first"]
+)
+@pytest.mark.parametrize(
     "ratio, expect_eaten",
     [(1.10, False), (1.24, False), (1.25, False), (1.26, True), (2.00, True)],
 )
-def test_eat_requires_mass_ratio_above_1_25(world, ratio, expect_eaten):
+def test_eat_requires_mass_ratio_above_1_25(world, ratio, expect_eaten, predator_first):
+    """Both join orders, because the eat check is a two-branch scan over each pair.
+
+    `_eat_other_players` tests `_can_eat(a, b)` first and only falls through to
+    `_can_eat(b, a)` when that fails, and `a` is whichever player joined earlier.
+    Staging the predator first would leave the second branch unexecuted.
+    """
     small_mass = 100.0
     big_mass = small_mass * ratio
-    big = add_player(world, "big", 500.0, 500.0, mass=big_mass)
-    small = add_player(world, "small", 500.0, 500.0, mass=small_mass)
+    names = ["big", "small"] if predator_first else ["small", "big"]
+    masses = {"big": big_mass, "small": small_mass}
+    players = {name: add_player(world, name, 500.0, 500.0, mass=masses[name]) for name in names}
+    big, small = players["big"], players["small"]
 
     simulation.step(world, TICK)
 
@@ -174,6 +221,35 @@ def test_eat_requires_mass_ratio_above_1_25(world, ratio, expect_eaten):
         assert small.pieces[0].mass == pytest.approx(small_mass)
 
 
+def test_a_predator_that_joins_late_eats_an_earlier_prey(world):
+    """Prey joins first, holds still and never eats; the predator grows into it.
+
+    Both players arrive at equal mass, so the ratio is earned rather than staged,
+    and this join order leaves `_can_eat(b, a)` as the only branch that can fire.
+    """
+    prey = add_player(world, "prey", 600.0, 500.0, mass=100)
+    predator = add_player(world, "predator", 500.0, 500.0, mass=100)
+
+    # A cluster inside the predator's own radius and nowhere near the motionless
+    # prey, sized to carry it just past the ratio in a single bite.
+    pellets = int((100.0 * EAT_RATIO - 100.0) // FOOD_MASS) + 1
+    for index in range(pellets):
+        food = Food(id=f"pellet-{index}", x=498.0 + index % 5, y=498.0 + index // 5)
+        world.food[food.id] = food
+
+    simulation.step(world, TICK)
+
+    assert world.food == {}
+    assert prey.pieces[0].mass == 100
+    assert predator.pieces[0].mass > prey.pieces[0].mass * EAT_RATIO
+
+    predator.last_input = (1.0, 0.0)
+    advance(world, 4.0, TICK)
+
+    assert prey.pieces == []
+    assert predator.pieces[0].mass == pytest.approx(200 + pellets * FOOD_MASS)
+
+
 def test_no_eating_when_pieces_do_not_overlap(world):
     big = add_player(world, "big", 100.0, 100.0, mass=1000)
     small = add_player(world, "small", 1100.0, 1100.0, mass=10)
@@ -185,14 +261,27 @@ def test_no_eating_when_pieces_do_not_overlap(world):
 
 
 def test_own_pieces_never_eat_each_other(world):
-    player = add_player(world, "solo", 500.0, 500.0, mass=200)
+    """Crushed into a corner, so the pair is actually deep enough to be eaten.
+
+    In open field `_resolve_collisions` runs before the eat check and separates
+    own pieces to OWN_PIECE_OVERLAP, short of the EAT_OVERLAP an eat needs, so
+    the pair would survive even without the own-piece exclusion. Bounds beat
+    separation, and the small piece starts pinned in the corner with nowhere to be
+    pushed, so the two end up coincident and the exclusion becomes the only thing
+    keeping the small one alive.
+    """
+    player = add_player(world, "solo", 12.0, 12.0, mass=400, last_input=(-1.0, -1.0))
     player.pieces[0].split_time = world.now
-    add_piece(world, player, 500.0, 500.0, mass=10, split_time=world.now)
+    add_piece(world, player, 1.0, 1.0, mass=30, split_time=world.now)
 
-    advance(world, 1.0, TICK)
+    deepest = 0.0
+    for _ in range(120):
+        simulation.step(world, TICK)
+        assert len(player.pieces) == 2
+        deepest = max(deepest, simulation.engulfment(*player.pieces))
 
-    assert len(player.pieces) == 2
-    assert sorted(p.mass for p in player.pieces) == [10, 200]
+    assert deepest > EAT_OVERLAP, "staging never reached a depth an eat could fire at"
+    assert sorted(p.mass for p in player.pieces) == [30, 400]
 
 
 # --- solid bodies ---------------------------------------------------------

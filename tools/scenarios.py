@@ -1,4 +1,4 @@
-"""Scripted scenarios, one per Phase 1 [Both] checklist item in GUIDEBOOK.md.
+"""Scripted scenarios, one per Phase 1 verify box in docs/GUIDEBOOK.md.
 
 Each scenario stages the world so a single behaviour is unmistakable, runs the
 real `simulation.step`, and records every tick. Nothing here reimplements game
@@ -280,14 +280,23 @@ def _eat_ratio() -> Recorder:
 
 
 def _own_pieces_no_eat() -> Recorder:
+    """Hold an own-piece pair past kill depth by crushing it into a corner.
+
+    In open field this proves nothing: `_resolve_collisions` runs before the eat
+    check every tick and separates own pieces to OWN_PIECE_OVERLAP (0.15), well
+    short of the EAT_OVERLAP (0.5) an eat needs, so the pair would survive whether
+    or not own pieces were excluded. Bounds beat separation, and the small piece
+    starts pinned in the corner with nowhere to be pushed, so from t=0.17s the two
+    sit exactly on top of each other at an engulfment of 2.3 - past kill depth and
+    past merge depth both. The exclusion is then the only thing keeping it alive.
+    """
     rec = Recorder()
-    cx, cy = CENTER
-    player = rec.spawn("one player", cx - 4.0, cy, mass=400)
+    player = rec.spawn("one player", 12.0, 12.0, mass=400, last_input=(-1.0, -1.0))
     player.pieces[0].split_time = rec.world.now
-    rec.add_piece(player, cx + 8.0, cy, mass=30)
-    rec.note("400 mass and 30 mass overlapping, both owned by the same player")
-    rec.note("400 > 30 * 1.25, so a cross-player pair here would be eaten instantly")
-    rec.run(5.0)
+    rec.add_piece(player, 1.0, 1.0, mass=30)
+    rec.note("400 mass and 30 mass in one corner, both owned by the same player")
+    rec.note("The 30 is pinned against the walls, so the 400 settles right on top of it")
+    rec.run(4.0)
     return rec
 
 
@@ -503,12 +512,16 @@ SCENARIOS: list[Scenario] = [
         title="Own pieces never eat each other",
         checklist="Player's own pieces never eat each other - they can only remerge.",
         expect=(
-            "A 400 and a 30 belonging to one player settle into contact and sit "
-            "there for five seconds. Both masses stay put. Nothing is eaten and, "
-            "since the remerge timer has not elapsed, nothing merges either."
+            "The 400 slides into the corner and settles directly on top of its own "
+            "30, which has nowhere left to be pushed. Within a fifth of a second the "
+            "small one is entirely inside the big one - a 13x mass ratio at far more "
+            "overlap than a kill needs - and it just sits there for the rest of the "
+            "clip. Watch the mass list: 400 and 30 both hold. No eat, and no merge "
+            "either, since the remerge timer has not elapsed."
         ),
         build=_own_pieces_no_eat,
-        view=_view_around(*CENTER, 220.0),
+        speed=0.5,
+        view=_view_around(14.0, 14.0, 90.0),
     ),
     Scenario(
         id="split_refused_small",
@@ -650,7 +663,7 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         id="demo",
         title="Free-running demo (server/main.py)",
-        checklist="The run described under 'How to verify' in GUIDEBOOK.md.",
+        checklist="The run described under 'How to verify' in docs/GUIDEBOOK.md.",
         expect=(
             "A chases the nearest food while B circles. A splits at t=3s and the "
             "halves recombine at t=15s. Food holds at 600 the whole time."

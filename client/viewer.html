@@ -38,13 +38,9 @@
         <span id="clock" class="clock">0.00s</span>
         <label class="speed">
           speed
-          <select id="speed">
-            <option value="0.1">0.1x</option>
-            <option value="0.25">0.25x</option>
-            <option value="0.5">0.5x</option>
-            <option value="1" selected>1x</option>
-            <option value="2">2x</option>
-          </select>
+          <!-- Options are rendered by viewer.js, which folds in the speed the
+               recording asks for so it always has an entry to select. -->
+          <select id="speed"></select>
         </label>
         <label class="toggle">
           <input id="show-debug" type="checkbox" checked />

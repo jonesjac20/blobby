@@ -65,8 +65,19 @@ def _kick_integral(start_elapsed: float, end_elapsed: float) -> float:
 
 
 def _normalized(dx: float, dy: float) -> tuple[float, float]:
+    """Unit vector, or a zero vector for anything unusable.
+
+    Every geometric test below is a threshold comparison, and NaN compares false
+    against all of them: a NaN position skips the `distance >= target` bail in
+    `_project_apart`, which then writes NaN into whichever piece it was
+    separating from, and skips the `engulfment < MERGE_OVERLAP` bail in
+    `_remerge_pieces`, which then fuses pieces at any distance. One malformed
+    input would spread through the world, so drop it here instead. `hypot`
+    carries both NaN and infinite components into `length`, so one check covers
+    every case.
+    """
     length = math.hypot(dx, dy)
-    if length == 0.0:
+    if not math.isfinite(length) or length == 0.0:
         return 0.0, 0.0
     return dx / length, dy / length
 

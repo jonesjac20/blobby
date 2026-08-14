@@ -124,9 +124,16 @@ export function worldToScreen(camera, viewport, x, y) {
  * appeared (a split), so it pops in at its true position rather than sliding in
  * from nowhere. One that only exists in `previous` is gone (eaten or merged)
  * and is dropped immediately.
+ *
+ * The result therefore carries `next`'s set of pieces with blended positions.
+ * A caller that needs one snapshot exactly as recorded should render it
+ * directly rather than asking for alpha 0.
  */
 export function interpolateStates(previous, next, alpha) {
-  if (!previous || previous === next || alpha <= 0) return next;
+  if (!previous || previous === next) return next;
+  // alpha 0 is `previous` by definition. Returning `next` here would jump a
+  // whole tick ahead every time a fresh snapshot resets alpha.
+  if (alpha <= 0) return previous;
 
   const before = new Map();
   for (const player of previous.players) {
