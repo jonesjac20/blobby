@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>blobby - Phase 1 verification</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="viewer">
+    <aside class="sidebar">
+      <header class="sidebar-head">
+        <h1>blobby</h1>
+        <p>Phase 1 verification</p>
+      </header>
+      <ol id="scenario-list" class="scenario-list"></ol>
+      <footer class="sidebar-foot">
+        <span id="verified-count">0 / 0 verified</span>
+        <button id="reset-verified" type="button" class="link-button">reset</button>
+      </footer>
+    </aside>
+
+    <main class="stage">
+      <div class="stage-head">
+        <h2 id="scenario-title">Loading&hellip;</h2>
+        <p id="scenario-checklist" class="checklist"></p>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="stage-canvas"></canvas>
+        <div id="event-toast" class="event-toast" hidden></div>
+      </div>
+
+      <div class="transport">
+        <button id="play" type="button" class="primary">Play</button>
+        <button id="step-back" type="button" title="Previous frame">&#9664;|</button>
+        <button id="step-forward" type="button" title="Next frame">|&#9654;</button>
+        <input id="timeline" type="range" min="0" max="0" value="0" step="1" />
+        <span id="clock" class="clock">0.00s</span>
+        <label class="speed">
+          speed
+          <!-- Options are rendered by viewer.js, which folds in the speed the
+               recording asks for so it always has an entry to select. -->
+          <select id="speed"></select>
+        </label>
+        <label class="toggle">
+          <input id="show-debug" type="checkbox" checked />
+          overlays
+        </label>
+        <label class="toggle">
+          <input id="follow-camera" type="checkbox" />
+          follow cam
+        </label>
+      </div>
+    </main>
+
+    <aside class="inspector">
+      <section class="panel">
+        <h3>What you should see</h3>
+        <p id="scenario-expect" class="expect"></p>
+        <label class="verify">
+          <input id="verified" type="checkbox" />
+          <span>I saw this behave correctly</span>
+        </label>
+      </section>
+
+      <section class="panel">
+        <h3>State <span id="food-count" class="pill"></span></h3>
+        <div id="players" class="players"></div>
+      </section>
+
+      <section class="panel grow">
+        <h3>Events</h3>
+        <ol id="event-log" class="event-log"></ol>
+      </section>
+    </aside>
+
+    <script type="module" src="viewer.js"></script>
+  </body>
+</html>
