@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from aiohttp.test_utils import TestClient, TestServer
 
 from server.config import DEFAULT_COLOR, INITIAL_PLAYER_MASS, TICK_RATE
-from server.main import create_app, emit_tick
+from server.main import _emit, create_app, emit_tick
+from server.protocol import ClientSession, handle_join, serialize_state, update_and_eliminate
 from server.world import World
 
 DT = 1.0 / TICK_RATE
@@ -304,3 +305,40 @@ def test_connect_join_and_disconnect_are_logged(caplog):
     assert "connected" in text
     assert "join" in text and "player 'A'" in text
     assert "disconnected" in text
+
+
+def test_stale_game_over_is_dropped_if_the_socket_already_respawned():
+    """Join during the state broadcast must not deliver the previous life's game_over."""
+
+    async def body():
+        world = World(seed=0, food_target=0)
+        session = ClientSession()
+        handle_join(
+            world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR}
+        )
+        world.players[session.player_id].pieces.clear()
+        deaths = update_and_eliminate(world, [session])
+        assert session.player_id is None
+        assert deaths
+
+        sent: list[dict] = []
+
+        class FakeWS:
+            closed = False
+
+            async def send_json(self, payload: dict) -> None:
+                if payload.get("type") == "state":
+                    handle_join(
+                        world,
+                        session,
+                        {"type": "join", "name": "A", "color": DEFAULT_COLOR},
+                    )
+                sent.append(payload)
+
+        session.ws = FakeWS()
+        await _emit([session], serialize_state(world), deaths)
+
+        assert session.player_id is not None
+        assert [message["type"] for message in sent] == ["state"]
+
+    asyncio.run(body())

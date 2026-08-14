@@ -43,6 +43,11 @@ async def _emit(
         except Exception:
             continue
     for session, message in deaths:
+        # process_tick clears player_id before this await; a join in the
+        # window above starts a new life. That game_over belongs to the
+        # previous one and must not arrive after welcome.
+        if session.player_id is not None:
+            continue
         if session.ws is None or session.ws.closed:
             continue
         try:
