@@ -2,7 +2,8 @@
 
 step(world, dt) performs, in order: advance sim time -> apply input and kick ->
 cluster forces -> resolve collisions and clamp to bounds -> collide with food ->
-collide with other players -> decay split velocity -> remerge -> respawn food.
+collide with other players -> decay split velocity -> remerge -> respawn food,
+eating any pellet that landed inside a disc and refilling until none do.
 
 Pieces have real bodies here, and every geometric test is a threshold on
 `engulfment` rather than a plain circle touch, so contact and penetration can
@@ -18,6 +19,7 @@ from server.config import (
     COHESION_SPEED,
     EAT_OVERLAP,
     EAT_RATIO,
+    FOOD_COUNT,
     FOOD_MASS,
     MAX_PIECES,
     MERGE_OVERLAP,
@@ -153,7 +155,7 @@ def step(world: World, dt: float) -> None:
     _eat_other_players(world)
     _decay_split_kicks(world)
     _remerge_pieces(world)
-    world.spawn_food_to_target_count()
+    _refill_food(world)
 
 
 def _apply_input_and_move(world: World, previous_now: float, dt: float) -> None:
@@ -347,6 +349,27 @@ def _eat_food(
                     eaten.add(food.id)
     for food_id in eaten:
         del world.food[food_id]
+
+
+def _refill_food(world: World) -> None:
+    """Respawn pellets, eating any that land inside a disc, until none do.
+
+    Spawn runs after the swept eat, so a pellet can appear inside a blob that
+    did not move onto it. Left for the next tick it would render inside a body
+    for a frame. Eat those at rest (zero-length sweep) and refill. Bounded so a
+    blob that somehow covered the world cannot loop forever.
+    """
+    at_rest = {
+        piece.piece_id: (piece.x, piece.y)
+        for player in world.players.values()
+        for piece in player.pieces
+    }
+    for _ in range(FOOD_COUNT):
+        world.spawn_food_to_target_count()
+        before = len(world.food)
+        _eat_food(world, at_rest)
+        if len(world.food) == before:
+            return
 
 
 def _eat_other_players(world: World) -> None:

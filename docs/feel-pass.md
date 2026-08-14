@@ -10,7 +10,7 @@ Three things to know before you touch anything:
 
 1. **Determinism is load-bearing.** `World` takes a seed, `World.now` is the only clock, and IDs come from the world's own RNG. The recorder and every test depend on a given seed replaying byte-identically. Do not introduce `time.monotonic()`, `random`, or `uuid.uuid4()` into simulation code.
 2. **`simulation.step` is dt-invariant** and `tests/test_dt_invariance.py` exists to keep it that way: the same sim time must produce the same state at 15Hz, `TICK_RATE` and 60Hz. Position projection is used instead of impulses specifically for this. Any change that makes a per-tick decrement or a dt-dependent integration will fail that suite, and it is telling you the truth.
-3. **Sequencing inside a tick matters.** Order is input+move, cluster forces, collisions+clamp, food, cross-player eating, kick decay, remerge, food respawn. Collisions run *before* the eat check, which is why an own-piece pair in open field can never be deep enough to eat — that subtlety already invalidated one scenario and one test.
+3. **Sequencing inside a tick matters.** Order is input+move, cluster forces, collisions+clamp, food, cross-player eating, kick decay, remerge, food respawn (then eat-at-rest any pellet that landed inside a disc, and refill). Collisions run *before* the eat check, which is why an own-piece pair in open field can never be deep enough to eat — that subtlety already invalidated one scenario and one test.
 
 Run `python -m pytest` (should be all green) and `python -m tools.record --serve` (opens the viewer) before and after every change.
 

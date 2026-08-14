@@ -1,5 +1,7 @@
 """Protocol helpers: parse, serialize, join, death. No WebSocket."""
 
+import json
+
 import pytest
 from conftest import add_player
 
@@ -15,6 +17,7 @@ from server.loop import process_tick
 from server.models import Food
 from server.protocol import (
     ClientSession,
+    FoodStream,
     handle_join,
     handle_message,
     parse_client_message,
@@ -87,7 +90,7 @@ def test_serialize_state_matches_wire_shape_and_includes_color(world):
             ],
         }
     ]
-    assert payload["food"] == []
+    assert "food" not in payload
 
 
 def test_join_spawns_at_initial_mass_and_welcome_id_matches(world):
@@ -266,3 +269,34 @@ def test_process_tick_advances_sim_time_and_snapshots(world):
     assert deaths == []
     assert payload["type"] == "state"
     assert len(payload["players"]) == 1
+    assert "food" not in payload
+
+
+def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
+    stream = FoodStream()
+    world.food["a"] = Food(id="a", x=100.6, y=200.4)
+
+    stream.refresh(world)
+    assert stream.version == 1
+    assert stream.payload == {
+        "type": "food",
+        "version": 1,
+        "food": [[101, 200]],
+    }
+
+    stream.refresh(world)
+    assert stream.version == 1
+
+    del world.food["a"]
+    stream.refresh(world)
+    assert stream.version == 2
+    assert stream.payload == {"type": "food", "version": 2, "food": []}
+
+
+def test_state_frame_without_food_is_under_4kb():
+    world = World(seed=1)
+    world.spawn_food_to_target_count()
+    world.spawn_player("A")
+    payload = serialize_state(world)
+    assert "food" not in payload
+    assert len(json.dumps(payload)) < 4000

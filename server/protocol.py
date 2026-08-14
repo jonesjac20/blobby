@@ -34,6 +34,39 @@ class ClientSession:
     # welcome. A state broadcast in that window would name a player the client
     # cannot follow yet.
     welcome_sent: bool = False
+    # Version of the food field this socket has successfully received. 0 matches
+    # FoodStream's initial version, which is the empty field — so a world with
+    # no food never sends a food message, and a late joiner (still at 0) gets
+    # the current field on the next emit.
+    food_version: int = 0
+
+
+class FoodStream:
+    """Change-gated food broadcast. One shared payload, a version per socket.
+
+    Pellets have no velocity, so comparing the id set once per tick catches
+    every change. The payload is bare `[x, y]` integer pairs — food has no
+    radius in the simulation, so a half-unit shift is sub-pixel at play zoom,
+    and dropping the 32-hex ids is what makes the message small enough to send
+    at all. A later per-pellet delta is a drop-in on this same message type.
+    """
+
+    def __init__(self) -> None:
+        self.version = 0
+        self._ids: frozenset[str] = frozenset()
+        self.payload: dict = {"type": "food", "version": 0, "food": []}
+
+    def refresh(self, world: World) -> None:
+        current = frozenset(world.food)
+        if current == self._ids:
+            return
+        self._ids = current
+        self.version += 1
+        self.payload = {
+            "type": "food",
+            "version": self.version,
+            "food": [[round(f.x), round(f.y)] for f in world.food.values()],
+        }
 
 
 def normalize_name(value: object) -> str:
@@ -101,9 +134,6 @@ def serialize_state(world: World) -> dict:
                 ],
             }
             for player in world.players.values()
-        ],
-        "food": [
-            {"id": food.id, "x": food.x, "y": food.y} for food in world.food.values()
         ],
     }
 

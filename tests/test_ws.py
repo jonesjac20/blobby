@@ -12,8 +12,15 @@ from server.config import (
     SPAWN_INVULN_SECONDS,
     TICK_RATE,
 )
+from server.models import Food
 from server.main import _emit, create_app, emit_tick
-from server.protocol import ClientSession, handle_join, serialize_state, update_and_eliminate
+from server.protocol import (
+    ClientSession,
+    FoodStream,
+    handle_join,
+    serialize_state,
+    update_and_eliminate,
+)
 from server.world import World
 
 DT = 1.0 / TICK_RATE
@@ -64,9 +71,10 @@ def _expire_spawn_protection(*players) -> None:
 
 async def _state_after_tick(app, ws, dt: float = DT) -> dict:
     await emit_tick(app, dt)
-    payload = await asyncio.wait_for(ws.receive_json(), timeout=1)
-    assert payload["type"] == "state"
-    return payload
+    while True:
+        payload = await asyncio.wait_for(ws.receive_json(), timeout=1)
+        if payload["type"] == "state":
+            return payload
 
 
 def test_join_spawns_and_welcome_id_matches_state():
@@ -482,5 +490,144 @@ def test_join_without_a_color_uses_the_default():
         assert welcome["type"] == "welcome"
         listed = next(p for p in state["players"] if p["id"] == welcome["id"])
         assert listed["color"] == DEFAULT_COLOR
+
+    asyncio.run(body())
+
+
+def test_root_serves_the_menu():
+    async def body():
+        async with connected_app() as (app, client):
+            response = await client.get("/")
+            text = await response.text()
+            assert response.status == 200
+            assert "Play" in text
+            assert "Spectate" in text
+            assert "Game Over" in text
+            assert 'id="game-canvas"' in text
+
+    asyncio.run(body())
+
+
+def test_game_client_files_are_served():
+    async def body():
+        async with connected_app() as (app, client):
+            for path in ("/index.html", "/game.js", "/render.js", "/style.css"):
+                response = await client.get(path)
+                assert response.status == 200, path
+
+    asyncio.run(body())
+
+
+def test_viewer_and_recordings_are_not_public():
+    async def body():
+        async with connected_app() as (app, client):
+            for path in (
+                "/viewer.html",
+                "/viewer.js",
+                "/recording.js",
+                "/recordings/index.json",
+            ):
+                response = await client.get(path)
+                assert response.status == 404, path
+
+    asyncio.run(body())
+
+
+def test_food_is_sent_once_then_not_resent_while_unchanged():
+    async def body():
+        world = World(seed=0, food_target=0)
+        world.food["a"] = Food(id="a", x=10.4, y=20.6)
+        async with connected_app(world) as (app, client):
+            ws = await client.ws_connect("/ws")
+            await emit_tick(app, DT)
+            food = await asyncio.wait_for(ws.receive_json(), timeout=1)
+            state = await asyncio.wait_for(ws.receive_json(), timeout=1)
+            await emit_tick(app, DT)
+            second = await asyncio.wait_for(ws.receive_json(), timeout=1)
+            await ws.close()
+
+        assert food == {"type": "food", "version": 1, "food": [[10, 21]]}
+        assert state["type"] == "state"
+        assert "food" not in state
+        assert second["type"] == "state"
+
+    asyncio.run(body())
+
+
+def test_eating_a_pellet_resends_food():
+    async def body():
+        world = World(seed=0, food_target=0)
+        world.food["pellet"] = Food(id="pellet", x=500.0, y=500.0)
+        async with connected_app(world) as (app, client):
+            ws = await client.ws_connect("/ws")
+            await emit_tick(app, DT)
+            first = await asyncio.wait_for(ws.receive_json(), timeout=1)
+            await asyncio.wait_for(ws.receive_json(), timeout=1)
+            world.spawn_player("A", 500.0, 500.0, mass=40)
+            await emit_tick(app, DT)
+            resent = await asyncio.wait_for(ws.receive_json(), timeout=1)
+            await asyncio.wait_for(ws.receive_json(), timeout=1)
+            await ws.close()
+
+        assert first["type"] == "food"
+        assert first["food"] == [[500, 500]]
+        assert resent == {"type": "food", "version": 2, "food": []}
+        assert world.food == {}
+
+    asyncio.run(body())
+
+
+def test_a_late_joiner_receives_the_current_food_field():
+    async def body():
+        world = World(seed=0, food_target=0)
+        world.food["a"] = Food(id="a", x=30.0, y=40.0)
+        async with connected_app(world) as (app, client):
+            first = await client.ws_connect("/ws")
+            await emit_tick(app, DT)
+            await asyncio.wait_for(first.receive_json(), timeout=1)
+            await asyncio.wait_for(first.receive_json(), timeout=1)
+            second = await client.ws_connect("/ws")
+            await emit_tick(app, DT)
+            late_food = await asyncio.wait_for(second.receive_json(), timeout=1)
+            late_state = await asyncio.wait_for(second.receive_json(), timeout=1)
+            early_state = await asyncio.wait_for(first.receive_json(), timeout=1)
+            await first.close()
+            await second.close()
+
+        assert late_food == {"type": "food", "version": 1, "food": [[30, 40]]}
+        assert late_state["type"] == "state"
+        assert early_state["type"] == "state"
+
+    asyncio.run(body())
+
+
+def test_a_failed_food_send_is_retried_without_advancing_the_cursor():
+    async def body():
+        world = World(seed=0, food_target=0)
+        world.food["a"] = Food(id="a", x=1.0, y=2.0)
+        stream = FoodStream()
+        stream.refresh(world)
+        session = ClientSession()
+        sent: list[dict] = []
+        attempts = {"n": 0}
+
+        class FakeWS:
+            closed = False
+
+            async def send_json(self, payload: dict) -> None:
+                if payload.get("type") == "food" and attempts["n"] == 0:
+                    attempts["n"] += 1
+                    raise ConnectionError("dropped")
+                sent.append(payload)
+
+        session.ws = FakeWS()
+        await _emit([session], serialize_state(world), [], stream)
+        assert session.food_version == 0
+        assert [message["type"] for message in sent] == ["state"]
+
+        await _emit([session], serialize_state(world), [], stream)
+        assert session.food_version == 1
+        assert [message["type"] for message in sent] == ["state", "food", "state"]
+        assert sent[1] == stream.payload
 
     asyncio.run(body())

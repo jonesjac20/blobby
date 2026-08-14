@@ -244,6 +244,28 @@ def test_food_count_stays_at_target_over_time(world_with_food):
         assert len(world_with_food.food) == FOOD_COUNT
 
 
+def test_food_that_spawns_on_a_blob_is_eaten_the_same_tick(world):
+    """Spawn is after the swept eat, so a pellet on a blob would otherwise sit a tick."""
+    player = add_player(world, x=500.0, y=500.0, mass=30)
+    world.food_target = 1
+    placements = iter([(500.0, 500.0), (50.0, 50.0)])
+
+    def spawn_placed() -> None:
+        while len(world.food) < 1:
+            x, y = next(placements)
+            food = Food(id=world.new_id(), x=x, y=y)
+            world.food[food.id] = food
+
+    world.spawn_food_to_target_count = spawn_placed  # type: ignore[method-assign]
+
+    simulation.step(world, TICK)
+
+    assert player.pieces[0].mass == pytest.approx(30 + FOOD_MASS)
+    leftover = next(iter(world.food.values()))
+    assert leftover.x == 50.0
+    assert leftover.y == 50.0
+
+
 # --- eating other players -------------------------------------------------
 
 

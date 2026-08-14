@@ -24,10 +24,9 @@ def _format_message(data: dict) -> str:
             masses = ",".join(f"{piece['mass']:.0f}" for piece in player.get("pieces", []))
             parts.append(f"{player.get('name', '?')}[{masses}]")
         roster = " ".join(parts) if parts else "-"
-        return (
-            f"state players={len(data.get('players', []))} {roster} "
-            f"food={len(data.get('food', []))}"
-        )
+        return f"state players={len(data.get('players', []))} {roster}"
+    if kind == "food":
+        return f"food n={len(data.get('food', []))} version={data.get('version')}"
     if kind == "welcome":
         return f"welcome id={data.get('id')}"
     if kind == "game_over":
