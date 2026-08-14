@@ -16,19 +16,9 @@ from server.world import World  # noqa: E402
 
 
 @pytest.fixture
-def no_food(monkeypatch):
-    """Stop food from respawning.
-
-    server.world binds FOOD_COUNT at import time, so patching server.config
-    would have no effect here.
-    """
-    monkeypatch.setattr("server.world.FOOD_COUNT", 0)
-
-
-@pytest.fixture
-def world(no_food) -> World:
+def world() -> World:
     """Empty deterministic world. No food, so masses only change on purpose."""
-    return World(seed=0)
+    return World(seed=0, food_target=0)
 
 
 @pytest.fixture

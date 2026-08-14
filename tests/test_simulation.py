@@ -7,10 +7,12 @@ from conftest import add_piece, add_player, advance, split
 
 from server import simulation
 from server.config import (
+    BASE_SPEED,
     EAT_OVERLAP,
     EAT_RATIO,
     FOOD_COUNT,
     FOOD_MASS,
+    INITIAL_PLAYER_MASS,
     MAX_PIECES,
     MIN_SPLIT_MASS,
     OWN_PIECE_OVERLAP,
@@ -116,6 +118,11 @@ def test_speed_for_mass_decreases_as_mass_grows():
     assert speed_for_mass(30) > speed_for_mass(100) > speed_for_mass(300)
 
 
+def test_speed_for_mass_of_zero_is_base_speed():
+    assert speed_for_mass(0) == BASE_SPEED
+    assert speed_for_mass(-1) == BASE_SPEED
+
+
 def test_heavier_piece_travels_less_per_tick(world):
     light = add_player(world, "light", 100.0, 100.0, mass=30, last_input=(1.0, 0.0))
     heavy = add_player(world, "heavy", 100.0, 1000.0, mass=300, last_input=(1.0, 0.0))
@@ -130,13 +137,14 @@ def test_piece_stays_inside_world_bounds(world):
         world, x=WORLD_WIDTH - 1.0, y=1.0, mass=30, last_input=(1.0, -1.0)
     )
     piece = player.pieces[0]
+    radius = simulation.radius_for_mass(piece.mass)
 
     advance(world, 5.0, TICK)
 
-    assert 0.0 <= piece.x <= WORLD_WIDTH
-    assert 0.0 <= piece.y <= WORLD_HEIGHT
-    assert piece.x == pytest.approx(WORLD_WIDTH)
-    assert piece.y == pytest.approx(0.0)
+    assert radius <= piece.x <= WORLD_WIDTH - radius
+    assert radius <= piece.y <= WORLD_HEIGHT - radius
+    assert piece.x == pytest.approx(WORLD_WIDTH - radius)
+    assert piece.y == pytest.approx(radius)
 
 
 # --- food -----------------------------------------------------------------
@@ -164,6 +172,55 @@ def test_food_outside_radius_is_not_eaten(world):
 
     assert "target" in world.food
     assert piece.mass == pytest.approx(30)
+
+
+def test_food_just_inside_radius_is_eaten(world):
+    """The rule is circle-covers-center, so the threshold is exactly radius."""
+    player = add_player(world, x=500.0, y=500.0, mass=30)
+    radius = simulation.radius_for_mass(30)
+    world.food["target"] = Food(id="target", x=500.0 + radius * 0.99, y=500.0)
+
+    simulation.step(world, TICK)
+
+    assert "target" not in world.food
+
+
+def test_food_just_outside_radius_is_not_eaten(world):
+    player = add_player(world, x=500.0, y=500.0, mass=30)
+    radius = simulation.radius_for_mass(30)
+    world.food["target"] = Food(id="target", x=500.0 + radius * 1.01, y=500.0)
+
+    simulation.step(world, TICK)
+
+    assert "target" in world.food
+
+
+@pytest.mark.parametrize("mass", [200, 40, 20, 10])
+def test_food_on_the_path_is_eaten_even_when_travel_exceeds_radius(world, mass):
+    """Point-sampling the post-move center misses the midpoint at mass 10."""
+    start_x, start_y = 500.0, 500.0
+    player = add_player(
+        world, x=start_x, y=start_y, mass=mass, last_input=(1.0, 0.0)
+    )
+    travel = speed_for_mass(mass) * TICK
+    world.food["mid"] = Food(id="mid", x=start_x + travel / 2.0, y=start_y)
+
+    simulation.step(world, TICK)
+
+    assert "mid" not in world.food
+    assert player.pieces[0].mass == pytest.approx(mass + FOOD_MASS)
+
+
+def test_two_pieces_cannot_both_eat_the_same_pellet(world):
+    left = add_player(world, "left", 500.0, 500.0, mass=40)
+    right = add_player(world, "right", 500.0, 500.0, mass=40)
+    world.food["pellet"] = Food(id="pellet", x=500.0, y=500.0)
+
+    simulation.step(world, TICK)
+
+    gained = sorted(p.pieces[0].mass - 40 for p in (left, right))
+    assert gained == [0.0, FOOD_MASS]
+    assert "pellet" not in world.food
 
 
 def test_eaten_food_is_respawned_to_target_count(world_with_food):
@@ -261,18 +318,18 @@ def test_no_eating_when_pieces_do_not_overlap(world):
 
 
 def test_own_pieces_never_eat_each_other(world):
-    """Crushed into a corner, so the pair is actually deep enough to be eaten.
+    """Crushed into a wall, so the pair is actually deep enough to be eaten.
 
     In open field `_resolve_collisions` runs before the eat check and separates
     own pieces to OWN_PIECE_OVERLAP, short of the EAT_OVERLAP an eat needs, so
     the pair would survive even without the own-piece exclusion. Bounds beat
-    separation, and the small piece starts pinned in the corner with nowhere to be
-    pushed, so the two end up coincident and the exclusion becomes the only thing
-    keeping the small one alive.
+    separation. Against a wall the small piece has nowhere to be pushed along
+    the normal, so the two end up coincident on that axis and the exclusion
+    becomes the only thing keeping the small one alive.
     """
-    player = add_player(world, "solo", 12.0, 12.0, mass=400, last_input=(-1.0, -1.0))
+    player = add_player(world, "solo", 12.0, 500.0, mass=400, last_input=(-1.0, 0.0))
     player.pieces[0].split_time = world.now
-    add_piece(world, player, 1.0, 1.0, mass=30, split_time=world.now)
+    add_piece(world, player, 1.0, 500.0, mass=30, split_time=world.now)
 
     deepest = 0.0
     for _ in range(120):
@@ -282,6 +339,35 @@ def test_own_pieces_never_eat_each_other(world):
 
     assert deepest > EAT_OVERLAP, "staging never reached a depth an eat could fire at"
     assert sorted(p.mass for p in player.pieces) == [30, 400]
+
+
+def test_eating_some_pieces_of_a_split_prey_leaves_the_rest_to_remerge(world):
+    """Eating is per-piece. Survivors still remerge with only the uneaten mass.
+
+    Predator 60 can eat a mass-40 fragment (60 > 40 * 1.25) but not the unsplit
+    120, which is the interesting case.
+    """
+    predator = add_player(world, "pred", 500.0, 500.0, mass=60)
+    prey = add_player(world, "prey", 200.0, 500.0, mass=40)
+    add_piece(world, prey, 200.0, 500.0, mass=40)
+    rim = simulation.radius_for_mass(60)
+    add_piece(world, prey, predator.pieces[0].x + rim * 0.5, 500.0, mass=40)
+    for piece in prey.pieces:
+        piece.split_time = world.now
+
+    simulation.step(world, TICK)
+
+    assert len(prey.pieces) == 2
+    assert sorted(p.mass for p in prey.pieces) == [40, 40]
+    assert predator.pieces[0].mass == pytest.approx(100)
+
+    for piece in prey.pieces:
+        piece.split_time = world.now - REMERGE_SECONDS - 0.01
+        piece.x, piece.y = 200.0, 500.0
+    simulation.step(world, TICK)
+
+    assert len(prey.pieces) == 1
+    assert prey.pieces[0].mass == pytest.approx(80)
 
 
 # --- solid bodies ---------------------------------------------------------
@@ -344,8 +430,30 @@ def test_bounds_hold_when_blobs_are_crushed_into_a_corner(world):
 
     for player in world.players.values():
         for piece in player.pieces:
-            assert 0.0 <= piece.x <= WORLD_WIDTH
-            assert 0.0 <= piece.y <= WORLD_HEIGHT
+            radius = simulation.radius_for_mass(piece.mass)
+            assert radius <= piece.x <= WORLD_WIDTH - radius
+            assert radius <= piece.y <= WORLD_HEIGHT - radius
+
+
+@pytest.mark.parametrize("mass", [30, 200, 1000])
+@pytest.mark.parametrize(
+    "x, y, dx, dy",
+    [
+        (1.0, 1.0, -1.0, -1.0),
+        (WORLD_WIDTH - 1.0, 1.0, 1.0, -1.0),
+        (1.0, WORLD_HEIGHT - 1.0, -1.0, 1.0),
+        (WORLD_WIDTH - 1.0, WORLD_HEIGHT - 1.0, 1.0, 1.0),
+    ],
+)
+def test_body_stays_inside_world_in_every_corner(world, mass, x, y, dx, dy):
+    player = add_player(world, x=x, y=y, mass=mass, last_input=(dx, dy))
+    piece = player.pieces[0]
+    radius = simulation.radius_for_mass(mass)
+
+    advance(world, 3.0, TICK)
+
+    assert radius <= piece.x <= WORLD_WIDTH - radius
+    assert radius <= piece.y <= WORLD_HEIGHT - radius
 
 
 # --- cohesion -------------------------------------------------------------
@@ -446,6 +554,29 @@ def test_try_split_stops_once_max_pieces_is_reached(world):
     assert split(world, player) == 1
     assert len(player.pieces) == MAX_PIECES
     assert sorted(p.mass for p in player.pieces) == [50, 50] + [100] * 6
+
+
+@pytest.mark.parametrize("n_pieces", [3, 5, 6, 7])
+def test_try_split_splits_the_largest_pieces_first(world, n_pieces):
+    masses = [100 - 10 * i for i in range(n_pieces)]
+    player = add_player(world, mass=masses[0])
+    for mass in masses[1:]:
+        add_piece(world, player, 500.0, 500.0, mass=mass)
+
+    ranked = sorted(player.pieces, key=lambda p: p.mass, reverse=True)
+    n_split = min(n_pieces, MAX_PIECES - n_pieces)
+    should_split = {p.piece_id for p in ranked[:n_split]}
+    should_keep = {p.piece_id for p in ranked[n_split:]}
+    original_mass = {p.piece_id: p.mass for p in player.pieces}
+
+    assert split(world, player) == n_split
+    assert len(player.pieces) == n_pieces + n_split
+
+    by_id = {p.piece_id: p for p in player.pieces}
+    for piece_id in should_split:
+        assert by_id[piece_id].mass == pytest.approx(original_mass[piece_id] / 2.0)
+    for piece_id in should_keep:
+        assert by_id[piece_id].mass == pytest.approx(original_mass[piece_id])
 
 
 def test_split_with_zero_input_produces_no_kick(world):
@@ -638,3 +769,66 @@ def test_split_pieces_remerge_after_the_full_cycle(world):
 
     assert len(player.pieces) == 1
     assert player.pieces[0].mass == pytest.approx(100)
+
+
+# --- world / hardening ----------------------------------------------------
+
+
+def test_zero_mass_pieces_do_not_crash_remerge(world):
+    player = add_player(world, "z", 500.0, 500.0, mass=0)
+    add_piece(world, player, 500.0, 500.0, mass=0)
+    for piece in player.pieces:
+        piece.split_time = world.now - REMERGE_SECONDS - 0.01
+
+    simulation.step(world, TICK)
+
+
+def test_engulfment_of_massless_pieces_is_total_on_contact(world):
+    a = add_player(world, "a", 500.0, 500.0, mass=0)
+    b = add_player(world, "b", 500.0, 500.0, mass=0)
+
+    assert simulation.engulfment(a.pieces[0], b.pieces[0]) == 1.0
+
+    b.pieces[0].x += 1.0
+    assert simulation.engulfment(a.pieces[0], b.pieces[0]) == 0.0
+
+
+def test_step_survives_a_player_with_no_pieces(world):
+    player = add_player(world, "gone", 500.0, 500.0)
+    player.pieces.clear()
+
+    simulation.step(world, TICK)
+
+    assert player.pieces == []
+    assert player.id in world.players
+
+
+def test_spawn_player_clamps_into_the_world(world):
+    radius = simulation.radius_for_mass(INITIAL_PLAYER_MASS)
+    player = world.spawn_player("out", -50.0, WORLD_HEIGHT + 50.0)
+    piece = player.pieces[0]
+
+    assert piece.x == pytest.approx(radius)
+    assert piece.y == pytest.approx(WORLD_HEIGHT - radius)
+
+
+def test_new_id_is_32_hex_chars(world):
+    seen = {world.new_id() for _ in range(100)}
+
+    assert len(seen) == 100
+    assert all(len(item) == 32 for item in seen)
+    for item in seen:
+        int(item, 16)
+
+
+def test_remove_player_drops_the_player_and_ignores_unknown_ids(world):
+    first = add_player(world, "a", 100.0, 100.0)
+    second = add_player(world, "b", 200.0, 200.0)
+
+    world.remove_player(first.id)
+
+    assert first.id not in world.players
+    assert second.id in world.players
+
+    world.remove_player("missing")
+    assert second.id in world.players

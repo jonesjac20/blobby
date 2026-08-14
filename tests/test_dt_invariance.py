@@ -1,9 +1,10 @@
-"""Tick-rate invariance.
+"""dt-invariance of simulation.step.
 
 The tick loop should only decide *when* step() runs, never *what* it computes.
-Every test here runs the same scenario at 15Hz, 30Hz and 60Hz and asserts the
-outcome matches. These are the tests that catch per-tick decrements and other
-dt-dependent integration, which look fine at a single tick rate.
+Every test here runs the same scenario at 15Hz, the configured TICK_RATE, and
+60Hz and asserts the outcome matches. These are the tests that catch per-tick
+decrements and other dt-dependent integration, which look fine at a single
+tick rate.
 """
 
 import pytest
@@ -16,11 +17,12 @@ from server.config import (
     REMERGE_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
     SPLIT_KICK_SPEED,
+    TICK_RATE,
     speed_for_mass,
 )
 from server.world import World
 
-TICK_RATES = [1.0 / 15.0, 1.0 / 30.0, 1.0 / 60.0]
+TICK_RATES = [1.0 / 15.0, 1.0 / TICK_RATE, 1.0 / 60.0]
 TOLERANCE = 1e-6
 # The cluster forces are the first mechanic that is not exactly integrable:
 # projection is dt-independent and the kick integral is analytic, but cohesion is
@@ -32,11 +34,11 @@ CLUSTER_TOLERANCE = 0.5
 MAX_PULL_SECONDS = 1.0
 
 
-def test_movement_is_invariant_across_tick_rates(no_food):
+def test_movement_is_invariant_across_tick_rates():
     end_positions = []
 
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 100.0, 100.0, mass=INITIAL_PLAYER_MASS)
         player.last_input = (1.0, 0.0)
 
@@ -53,12 +55,12 @@ def test_movement_is_invariant_across_tick_rates(no_food):
     )
 
 
-def test_split_kick_displacement_is_invariant_across_tick_rates(no_food):
+def test_split_kick_displacement_is_invariant_across_tick_rates():
     """A naive per-tick velocity decrement drifts here; the analytic one does not."""
     displacements = []
 
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=40)
         split(world, player)
         parent, child = player.pieces
@@ -82,9 +84,9 @@ def test_split_kick_displacement_is_invariant_across_tick_rates(no_food):
     )
 
 
-def test_kick_reaches_exactly_zero_at_every_tick_rate(no_food):
+def test_kick_reaches_exactly_zero_at_every_tick_rate():
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=40)
         split(world, player)
         child = player.pieces[1]
@@ -100,7 +102,7 @@ def test_kick_reaches_exactly_zero_at_every_tick_rate(no_food):
         assert child.vy == 0.0
 
 
-def test_remerge_completes_at_the_same_sim_time_across_tick_rates(no_food):
+def test_remerge_completes_at_the_same_sim_time_across_tick_rates():
     """The timer gates the merge pull, and the pull itself has to be rate-free too.
 
     Once the timer clears the halves still have to sink from OWN_PIECE_OVERLAP to
@@ -110,7 +112,7 @@ def test_remerge_completes_at_the_same_sim_time_across_tick_rates(no_food):
     merge_times = []
 
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=100)
         split(world, player)
 
@@ -131,10 +133,10 @@ def test_remerge_completes_at_the_same_sim_time_across_tick_rates(no_food):
     assert max(merge_times) - min(merge_times) < CLUSTER_TOLERANCE
 
 
-def test_remerge_does_not_fire_early_at_a_coarse_tick_rate(no_food):
+def test_remerge_does_not_fire_early_at_a_coarse_tick_rate():
     """A 15Hz tick must not round the 12s timer down into an early merge."""
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=100)
         split(world, player)
 
@@ -145,12 +147,12 @@ def test_remerge_does_not_fire_early_at_a_coarse_tick_rate(no_food):
             )
 
 
-def test_solid_contact_settles_identically_across_tick_rates(no_food):
+def test_solid_contact_settles_identically_across_tick_rates():
     """Position projection carries no dt, so the resting gap should be exact."""
     gaps = []
 
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         left = world.spawn_player("L", 480.0, 500.0, mass=100)
         right = world.spawn_player("R", 520.0, 500.0, mass=100)
         left.last_input = (1.0, 0.0)
@@ -166,12 +168,12 @@ def test_solid_contact_settles_identically_across_tick_rates(no_food):
     assert max(gaps) - min(gaps) < TOLERANCE
 
 
-def test_cohesion_settles_at_the_same_overlap_across_tick_rates(no_food):
+def test_cohesion_settles_at_the_same_overlap_across_tick_rates():
     """Cohesion is first-order, but the projection it hands off to is not."""
     overlaps = []
 
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=200)
         split(world, player)
 
@@ -195,7 +197,7 @@ def test_world_is_deterministic_for_a_given_seed():
         world.spawn_food_to_target_count()
 
         for _ in range(120):
-            simulation.step(world, 1.0 / 30.0)
+            simulation.step(world, 1.0 / TICK_RATE)
 
         food = sorted((f.id, f.x, f.y) for f in world.food.values())
         pieces = sorted((p.piece_id, p.x, p.y, p.mass) for p in player.pieces)
@@ -204,7 +206,7 @@ def test_world_is_deterministic_for_a_given_seed():
     assert run() == run()
 
 
-def test_same_sim_time_gives_same_state_at_different_tick_rates(no_food):
+def test_same_sim_time_gives_same_state_at_different_tick_rates():
     """End-to-end: split, kick decay, cohesion and steering all agree at 2s.
 
     Positions get CLUSTER_TOLERANCE because cohesion is running; piece counts and
@@ -213,7 +215,7 @@ def test_same_sim_time_gives_same_state_at_different_tick_rates(no_food):
     states = []
 
     for dt in TICK_RATES:
-        world = World(seed=0)
+        world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=100)
         # Aim right, split, then steer away, the way a real player would.
         player.last_input = (1.0, 0.0)

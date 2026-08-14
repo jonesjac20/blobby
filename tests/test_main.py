@@ -6,12 +6,20 @@ nearest-food steering graduate into the state broadcast and the bots rather than
 being deleted with it.
 """
 
+import asyncio
 import math
 
 import pytest
 from conftest import add_piece, add_player
 
-from server.main import _summary_line, centroid, input_toward_nearest_food
+from server.config import TICK_RATE
+from server.main import (
+    _summary_line,
+    centroid,
+    input_toward_nearest_food,
+    next_deadline,
+    sleep_until,
+)
 from server.models import Food
 
 # --- centroid -------------------------------------------------------------
@@ -24,11 +32,11 @@ def test_centroid_of_a_single_piece_is_its_position(world):
 
 
 def test_centroid_is_mass_weighted(world):
-    player = add_player(world, "two", 0.0, 0.0, mass=300)
-    add_piece(world, player, 100.0, 0.0, mass=100)
+    player = add_player(world, "two", 200.0, 200.0, mass=300)
+    add_piece(world, player, 300.0, 200.0, mass=100)
 
     # Three times the mass on the left, so the centroid sits a quarter of the way over.
-    assert centroid(player) == (25.0, 0.0)
+    assert centroid(player) == (225.0, 200.0)
 
 
 def test_centroid_of_a_player_with_no_pieces_is_the_origin(world):
@@ -97,3 +105,52 @@ def test_summary_line_spells_out_the_halves_of_a_split_player(world):
         "tick 90 | A pieces=[100,100] pos=(320,600) at=(300,600) (340,600) "
         "| B pieces=[200] pos=(900,600) | food=0"
     )
+
+
+# --- tick loop ------------------------------------------------------------
+
+
+def test_next_deadline_advances_by_the_interval():
+    interval = 1.0 / TICK_RATE
+
+    assert next_deadline(0.0, 0.001, interval) == pytest.approx(interval)
+
+
+def test_next_deadline_slips_when_a_tick_overruns():
+    interval = 1.0 / TICK_RATE
+    now = 0.1
+
+    assert next_deadline(0.0, now, interval) == pytest.approx(now + interval)
+
+
+def test_tick_loop_runs_at_configured_rate():
+    """Fake clock: over 30s of simulated time, wake count is within 1% of TICK_RATE * elapsed."""
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = FakeClock()
+
+    async def fake_sleep(seconds: float) -> None:
+        clock.t += seconds
+
+    async def drive() -> int:
+        interval = 1.0 / TICK_RATE
+        deadline = clock() + interval
+        ticks = 0
+        end = 30.0
+        while True:
+            now = await sleep_until(deadline, clock=clock, sleep=fake_sleep)
+            ticks += 1
+            deadline = next_deadline(deadline, clock(), interval)
+            if now >= end:
+                break
+        return ticks
+
+    ticks = asyncio.run(drive())
+    expected = TICK_RATE * 30
+    assert abs(ticks - expected) / expected <= 0.01

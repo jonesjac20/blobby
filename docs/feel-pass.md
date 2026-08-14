@@ -1,4 +1,4 @@
-# Phase 1.5 — Feel and fidelity pass
+# Feel and fidelity pass
 
 Work banked during the Phase 1 close-out review. **None of it blocks Phase 2.** It is collected here so it is not lost and not confused with the defects that were fixed at the time.
 
@@ -9,7 +9,7 @@ You are picking up a hobby agar.io clone. The server is Python 3.13 standard lib
 Three things to know before you touch anything:
 
 1. **Determinism is load-bearing.** `World` takes a seed, `World.now` is the only clock, and IDs come from the world's own RNG. The recorder and every test depend on a given seed replaying byte-identically. Do not introduce `time.monotonic()`, `random`, or `uuid.uuid4()` into simulation code.
-2. **`simulation.step` is dt-invariant** and `tests/test_tick_rate.py` exists to keep it that way: the same sim time must produce the same state at 15, 30 and 60Hz. Position projection is used instead of impulses specifically for this. Any change that makes a per-tick decrement or a dt-dependent integration will fail that suite, and it is telling you the truth.
+2. **`simulation.step` is dt-invariant** and `tests/test_dt_invariance.py` exists to keep it that way: the same sim time must produce the same state at 15Hz, `TICK_RATE` and 60Hz. Position projection is used instead of impulses specifically for this. Any change that makes a per-tick decrement or a dt-dependent integration will fail that suite, and it is telling you the truth.
 3. **Sequencing inside a tick matters.** Order is input+move, cluster forces, collisions+clamp, food, cross-player eating, kick decay, remerge, food respawn. Collisions run *before* the eat check, which is why an own-piece pair in open field can never be deep enough to eat — that subtlety already invalidated one scenario and one test.
 
 Run `python -m pytest` (should be all green) and `python -m tools.record --serve` (opens the viewer) before and after every change.
@@ -20,11 +20,17 @@ Items are grouped by area and ordered within each group by value. Each has a con
 
 Where a number appears below it was measured, not estimated. Re-measure before you change anything; if your number disagrees with the one here, find out why before proceeding.
 
+### Status
+
+Done before Phase 2: A1, A3, A4 (Phase 4 wording already matched), A5, A7 except hysteresis, plus the D/E items called out as done on those bullets.
+
+Still deferred: A2 (kick scale — after Phase 3), A6 (food grid — before Phase 6), A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot), E requirements split (lands with aiohttp in Phase 2).
+
 ---
 
 ## A. Simulation feel and correctness
 
-### A1. `BASE_SPEED` breaks its own stated invariant for every split fragment
+### A1. `BASE_SPEED` breaks its own stated invariant for every split fragment — **done**
 
 `server/config.py` comments that `BASE_SPEED` is kept "low enough that one tick of travel never exceeds that radius, or fast blobs jump straight over the food they are chasing". That holds only above mass ~37. `speed_for_mass` makes *lighter* pieces faster, and splitting produces lighter pieces, so it fails for exactly the case it was written about.
 
@@ -46,7 +52,7 @@ Scale the kick with `radius_for_mass` so the pop stays proportionate.
 
 **Acceptance:** a test asserting the halves of a mass-2000 blob end further apart than their resting distance. Defer the exact scaling constant until Phase 3.
 
-### A3. Bounds are clamped on centers, not bodies
+### A3. Bounds are clamped on centers, not bodies — **done**
 
 `_resolve_collisions` clamps `piece.x` and `piece.y` into `[0, WORLD_WIDTH]`. A piece can therefore sit with its center on the wall and a full radius outside the world — 17.8 units for a mass-1000 blob, over half its diameter hanging in the void. The Phase 1 verify box is satisfied on the coordinate but not on the body, and Phase 3 will render blobs poking out of the arena.
 
@@ -54,7 +60,7 @@ Clamping to `[radius, WORLD_WIDTH - radius]` is the fix. Note the interaction wi
 
 **Acceptance:** for every piece, `radius <= x <= WORLD_WIDTH - radius`, asserted after driving blobs of several masses into all four corners. Existing bounds tests must still pass.
 
-### A4. A predator is always slower than its prey — document the technique
+### A4. A predator is always slower than its prey — document the technique — **done**
 
 Not a bug; `speed ∝ mass ** -0.4` means a predator satisfying `A.mass > 1.25 * B.mass` moves at most `(1/1.25) ** 0.4 = 91.5%` of its prey's speed, and less at higher ratios. Combined with `EAT_OVERLAP = 0.5`, which requires the prey's center to reach the predator's rim, a competently fleeing prey cannot be caught by chasing at any mass ratio. You must corner it or split into it.
 
@@ -62,7 +68,7 @@ This is agar.io-correct and should not be changed. It is listed here because it 
 
 **Acceptance:** no code change. Confirm the Phase 4 wording matches measured behaviour.
 
-### A5. The tick loop drifts about 6%
+### A5. The tick loop drifts about 6% — **done**
 
 `server/main.py` sleeps a fixed `1/TICK_RATE` *after* the previous tick's work rather than sleeping to a deadline. Measured over 30 seconds: the last line was `tick 840`, i.e. **28.2Hz**, so a line labelled `tick 840` prints at t ≈ 29.8s.
 
@@ -70,7 +76,7 @@ The simulation is unaffected — `World.now` accumulates measured elapsed time, 
 
 Sleep to a deadline: track the next tick's target time and sleep the remainder.
 
-**Acceptance:** over a 30s run, tick count is within 1% of `30 * elapsed`. `tests/test_tick_rate.py` must still pass.
+**Acceptance:** over a 30s run, tick count is within 1% of `TICK_RATE * elapsed`. `tests/test_dt_invariance.py` must still pass.
 
 ### A6. Food collision is O(pieces × FOOD_COUNT) and will bite in Phase 6
 
@@ -84,10 +90,12 @@ Do this before Phase 6, not before Phase 2.
 
 ### A7. Small hardening in the simulation
 
-- **`_remerge_pieces` divides by zero on a zero-mass pair.** `World.spawn_player` accepts an arbitrary mass, so two coincident zero-mass pieces get `engulfment` 1.0 from the massless branch, clear `MERGE_OVERLAP`, and crash on `total = a.mass + b.mass`. `_project_apart` guards the identical case; this does not.
-- **`World.spawn_player` does not clamp the spawn point into the world.** A caller passing out-of-bounds coordinates gets a piece that teleports to the wall on the first step. Becomes relevant when Phase 2 picks spawn positions.
-- **A player reduced to zero pieces stays in `world.players` forever.** Phase 2 owns the respawn-or-spectate decision; what belongs here is a test that `step` survives a player with an empty piece list, since every phase iterates it.
-- **`new_id` truncates to 32 bits.** 8 hex chars means an expected first collision around 77k IDs, and a long-lived server respawning 600 food repeatedly gets there. A food collision is benign (the loop re-rolls) but a `piece_id` collision would make the `eaten` sets delete the wrong piece. Widen it.
+Done except the last bullet.
+
+- **`_remerge_pieces` divides by zero on a zero-mass pair.** — **done**
+- **`World.spawn_player` does not clamp the spawn point into the world.** — **done**
+- **A player reduced to zero pieces stays in `world.players` forever.** Phase 2 owns the respawn-or-spectate decision; what belongs here is a test that `step` survives a player with an empty piece list. — **done**
+- **`new_id` truncates to 32 bits.** — **done** (full 32-char hex)
 - **The eat-ratio boundary flips collision solidity discontinuously.** At `A.mass ≈ 1.25 * B.mass`, one pellet toggles the pair between solid and fully permeable, so two players hovering near the ratio see contact stutter on and off tick to tick. A small hysteresis band would smooth it. Cosmetic; judge it in Phase 4.
 
 **Acceptance:** a test per bullet, each failing before the fix.
@@ -201,14 +209,15 @@ The suite is strong on the spec'd behaviours. The gaps are compositional and adv
 
 - **Mass conservation across a compound tick.** One tick containing a cross-player eat, an own-piece remerge and a food pickup simultaneously; assert total mass equals before plus `FOOD_MASS * eaten`. The chain-eat path (a piece that eats and is itself eaten in the same tick) is the risky part — it is correct today, and nothing pins it.
 - **Three-player eat ordering.** P0 eats P1's piece, grows past `1.25 * P2`, and eats P2's piece in the same tick. Assert mass lands exactly once and the result does not depend on `world.players` insertion order — or, if it does, pin the documented order.
-- **Two pieces contending for one pellet.** Assert exactly one gains `FOOD_MASS` and the pellet is removed once. The `if food.id in eaten: continue` guard is currently unexecuted by any test, so a double-credit or a `KeyError` on the delete would go unnoticed.
-- **`try_split` piece *selection*, not just the count.** At 3, 5, 6 and 7 pieces of splittable mass against `MAX_PIECES = 8`, assert *which* pieces split — largest first, per the docstring. The existing test checks the resulting count only.
-- **`try_split` with unnormalized `last_input`.** Assert the kick magnitude is exactly `SPLIT_KICK_SPEED`, not scaled by the input's length.
+- **Two pieces contending for one pellet.** — **done**
+- **`try_split` piece *selection*, not just the count.** — **done**
+- **`try_split` with unnormalized `last_input`.** Already covered by `test_split_kick_points_along_last_input`.
 - **An 8-piece all-merge-ready cluster collapses to one.** Exercises the projection skip cascading through the `while merged` loop, the least-tested control flow in `simulation.py`.
-- **`World.remove_player` has no test at all**, and it is an explicit Phase 1 checklist item. Also untested: the `mass <= 0` branch of `speed_for_mass` and the massless branch of `engulfment`.
-- **The food radius boundary is bracketed far too loosely.** Tests place food at `radius/2` and `radius*2`; the rule is "circle covers the center", so the threshold is exactly `radius`. An implementation using `radius/2` or `1.5*radius` passes both. Add a `radius*0.99` / `radius*1.01` pair.
+- **`World.remove_player` has no test at all** — **done**, along with the `mass <= 0` branch of `speed_for_mass` and the massless branch of `engulfment`.
+- **The food radius boundary is bracketed far too loosely.** — **done** (`radius*0.99` / `radius*1.01` on a stationary piece).
+- **Split prey, partial eat, then remerge.** — **done** (`test_eating_some_pieces_of_a_split_prey_leaves_the_rest_to_remerge`).
 - **No JavaScript is tested at all.** `recording.js` advertises in its own header that it has no DOM access "so it can be exercised outside a browser" — an affordance nothing uses. Two things are worth pinning: the delta-encoder round trip (`Recorder.capture`'s encoding and `RecordingCursor.foodAt`'s decoding share an undocumented contract that removals are applied before additions, with no test on either side), and that `render.js`'s `radiusForMass` still agrees with `simulation.radius_for_mass`. A Python test that replays the encoder's own output per frame against `world.food` covers the first without needing a JS test runner.
-- **Loose tolerances worth tightening.** `CLUSTER_TOLERANCE` in `test_tick_rate.py` is justified in world units ("half a world unit") and then applied to a value in *seconds* — half a second is 15 ticks and half the entire merge-pull budget, so that invariance assertion is far weaker than it reads; the real spread is tiny, so 0.02s is free. `test_piece_moves_in_direction_of_input` checks signs only, so a diagonal being √2 too fast would pass. `test_speed_for_mass_decreases_as_mass_grows` is three-point monotonicity, which a step function satisfies. `test_every_piece_of_a_full_cluster_touches_a_neighbour` only requires one neighbour each, so two disjoint clusters of four pass. `test_split_pieces_remerge_after_the_full_cycle` allows a full second of slack, and no test anywhere pins the absolute merge time.
+- **Loose tolerances worth tightening.** `CLUSTER_TOLERANCE` in `test_dt_invariance.py` is justified in world units ("half a world unit") and then applied to a value in *seconds* — half a second is 15 ticks and half the entire merge-pull budget, so that invariance assertion is far weaker than it reads; the real spread is tiny, so 0.02s is free. `test_piece_moves_in_direction_of_input` checks signs only, so a diagonal being √2 too fast would pass. `test_speed_for_mass_decreases_as_mass_grows` is three-point monotonicity, which a step function satisfies. `test_every_piece_of_a_full_cluster_touches_a_neighbour` only requires one neighbour each, so two disjoint clusters of four pass. `test_split_pieces_remerge_after_the_full_cycle` allows a full second of slack, and no test anywhere pins the absolute merge time.
 
 ### Two structural notes on the test suite
 
@@ -220,6 +229,6 @@ The suite is strong on the spec'd behaviours. The gaps are compositional and adv
 ## E. Housekeeping
 
 - **`requirements.txt` is unpinned and mixes concerns.** `pytest` alone is correct for Phase 1 and nothing is missing, but Phase 7's `vm_bootstrap.sh` will `pip install -r requirements.txt` on the game server and drag pytest onto it. Pin versions, and split a `requirements-dev.txt` when `aiohttp` lands in Phase 2.
-- **`test_tick_rate.py` is misnamed and disconnected from `TICK_RATE`.** It tests dt-invariance of `simulation.step`, not tick rate, and its `TICK_RATES` list hardcodes `[1/15, 1/30, 1/60]` without referencing `config.TICK_RATE` — so changing the tick rate to 60 breaks no test. Rename to something like `test_dt_invariance.py` and add one test that the configured rate is what the loop actually runs at.
-- **`World.food_target` is passed by nothing outside the recorder**, while the `no_food` fixture monkeypatches `server.world.FOOD_COUNT` to get the same result. The fixture's docstring is right that patching `server.config` would not work — it just picked the harder lever. `World(food_target=0)` needs no patching.
-- **Config values are bound at import time.** `server.world` and `server.simulation` import constants by value, so patching `server.config.X` has no effect; only `server.world.X` works. One fixture comment implies otherwise. Worth a note in `config.py` since it will catch someone out.
+- **`test_tick_rate.py` is misnamed and disconnected from `TICK_RATE`.** — **done** (renamed `test_dt_invariance.py`; the loop rate is pinned in `test_main.py`).
+- **`World.food_target` is passed by nothing outside the recorder** — **done**. The `world` fixture is now `World(seed=0, food_target=0)`.
+- **Config values are bound at import time.** — **done** (note in `config.py`).

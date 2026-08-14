@@ -1,4 +1,9 @@
-"""Simulation constants from build plan section 5, plus world/tuning values."""
+"""Simulation constants from build plan section 5, plus world/tuning values.
+
+These names are bound by value at import into `server.world` and
+`server.simulation`. Patching `server.config.FOOD_COUNT` afterwards has no
+effect; patch `server.world.FOOD_COUNT`, or pass `World(food_target=...)`.
+"""
 
 import time
 
@@ -37,10 +42,10 @@ FOOD_MASS = 1
 # Above MIN_SPLIT_MASS so a freshly spawned player can split without eating first.
 INITIAL_PLAYER_MASS = 40
 
-# World units per second for a piece at INITIAL_PLAYER_MASS. Radius is
-# sqrt(mass/pi), so a spawn-sized blob is only ~3.6 units across; keep this low
-# enough that one tick of travel never exceeds that radius, or fast blobs jump
-# straight over the food they are chasing instead of eating it.
+# World units per second for a piece at INITIAL_PLAYER_MASS. Lighter pieces
+# move faster (`speed_for_mass`), so a split fragment can travel more than
+# its own radius in one tick. Food collection is a swept test along that
+# path, so pellets on the trajectory are still eaten.
 BASE_SPEED = 100
 # Initial magnitude of the velocity kick given to a freshly split piece. Total
 # kick displacement is SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2, so the

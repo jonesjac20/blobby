@@ -68,7 +68,28 @@ def _summary_line(world: World, tick: int, a: Player, b: Player) -> str:
     parts.append(f"food={len(world.food)}")
     return " | ".join(parts)
 
-# Main game loop
+def next_deadline(previous: float, now: float, interval: float) -> float:
+    """When the next tick should wake. Overruns slip rather than bursting."""
+    nxt = previous + interval
+    if nxt < now:
+        return now + interval
+    return nxt
+
+
+async def sleep_until(
+    deadline: float,
+    clock=SIMULATION_CLOCK_SOURCE,
+    sleep=asyncio.sleep,
+) -> float:
+    """Sleep until `deadline`. Returns the clock reading after the wait."""
+    now = clock()
+    delay = deadline - now
+    if delay > 0.0:
+        await sleep(delay)
+        now = clock()
+    return now
+
+
 async def run() -> None:
     world = World(seed=time.time_ns())
     # Equal masses and opposite corners of the world, so neither can eat the
@@ -79,14 +100,14 @@ async def run() -> None:
 
     tick = 0
     has_split = False
+    interval = 1.0 / TICK_RATE
     last = SIMULATION_CLOCK_SOURCE()
+    deadline = last + interval
 
     while True:
-        await asyncio.sleep(1.0 / TICK_RATE)
-
+        now = await sleep_until(deadline)
         # Sim time advances by measured elapsed time, not by a fixed 1/TICK_RATE,
         # so the timers stay honest when a tick runs long. Phase 2 keeps this.
-        now = SIMULATION_CLOCK_SOURCE()
         dt = min(now - last, MAX_TICK_SECONDS)
         last = now
         tick += 1
@@ -105,6 +126,8 @@ async def run() -> None:
 
         if tick % SUMMARY_EVERY_TICKS == 0:
             print(_summary_line(world, tick, player_a, player_b))
+
+        deadline = next_deadline(deadline, SIMULATION_CLOCK_SOURCE(), interval)
 
 
 def main() -> None:

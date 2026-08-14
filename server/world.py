@@ -1,5 +1,6 @@
 """Authoritative world state: players, food, and the simulation clock."""
 
+import math
 import random
 import uuid
 
@@ -10,6 +11,23 @@ from server.config import (
     WORLD_WIDTH,
 )
 from server.models import Food, Piece, Player
+
+
+def clamp_body_position(x: float, y: float, mass: float) -> tuple[float, float]:
+    """Inset a piece's center so its disc stays inside the world rectangle.
+
+    A blob whose diameter exceeds the world is pinned to the center rather than
+    inverting the range.
+    """
+    radius = math.sqrt(max(mass, 0.0) / math.pi)
+
+    def _axis(value: float, limit: float) -> float:
+        lo, hi = radius, limit - radius
+        if lo > hi:
+            return limit / 2.0
+        return min(max(value, lo), hi)
+
+    return _axis(x, WORLD_WIDTH), _axis(y, WORLD_HEIGHT)
 
 
 class World:
@@ -25,8 +43,8 @@ class World:
         self.food_target = food_target
 
     def new_id(self) -> str:
-        """An 8-hex-char id drawn from the world RNG so worlds stay reproducible."""
-        return uuid.UUID(int=self.rng.getrandbits(128), version=4).hex[:8]
+        """A 32-hex-char uuid4 drawn from the world RNG so worlds stay reproducible."""
+        return uuid.UUID(int=self.rng.getrandbits(128), version=4).hex
 
     def spawn_player(
         self,
@@ -35,6 +53,7 @@ class World:
         y: float,
         mass: float = INITIAL_PLAYER_MASS,
     ) -> Player:
+        x, y = clamp_body_position(x, y, mass)
         player = Player(
             id=self.new_id(),
             name=name,

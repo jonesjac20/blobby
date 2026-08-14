@@ -28,12 +28,10 @@ from server.config import (
     SEPARATION_PASSES,
     SPLIT_KICK_DECAY_SECONDS,
     SPLIT_KICK_SPEED,
-    WORLD_HEIGHT,
-    WORLD_WIDTH,
     speed_for_mass,
 )
 from server.models import Piece, Player
-from server.world import World
+from server.world import World, clamp_body_position
 
 
 def radius_for_mass(mass: float) -> float:
@@ -127,10 +125,16 @@ def step(world: World, dt: float) -> None:
     previous_now = world.now
     world.now += dt
 
+    previous_positions = {
+        piece.piece_id: (piece.x, piece.y)
+        for player in world.players.values()
+        for piece in player.pieces
+    }
+
     _apply_input_and_move(world, previous_now, dt)
     _cluster_forces(world, previous_now, dt)
     _resolve_collisions(world)
-    _eat_food(world)
+    _eat_food(world, previous_positions)
     _eat_other_players(world)
     _decay_split_kicks(world)
     _remerge_pieces(world)
@@ -217,13 +221,15 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
 
 
 def _resolve_collisions(world: World) -> None:
-    """Push overlapping bodies apart, then clamp every piece into the world.
+    """Push overlapping bodies apart, then clamp every disc into the world.
 
     Position projection rather than impulses: it carries no dt, so a settled
     configuration is identical at every tick rate.
 
-    A piece crushed into a corner by the final clamp may keep some residual
-    overlap. Bounds win over separation, which is the right way round.
+    The clamp insets each center by its radius, so a piece cannot sit with
+    half its body hanging outside the arena. A piece crushed into a corner by
+    that clamp may keep some residual overlap. Bounds win over separation,
+    which is the right way round.
     """
     bodies = [
         (player.id, piece)
@@ -250,8 +256,7 @@ def _resolve_collisions(world: World) -> None:
                 _project_apart(a, b, target, j)
 
     for _, piece in bodies:
-        piece.x = min(max(piece.x, 0.0), WORLD_WIDTH)
-        piece.y = min(max(piece.y, 0.0), WORLD_HEIGHT)
+        piece.x, piece.y = clamp_body_position(piece.x, piece.y, piece.mass)
 
 
 def _project_apart(a: Piece, b: Piece, target: float, fallback_index: int) -> None:
@@ -280,15 +285,43 @@ def _project_apart(a: Piece, b: Piece, target: float, fallback_index: int) -> No
     b.y += uy * b_share
 
 
-def _eat_food(world: World) -> None:
+def _distance_point_to_segment(
+    px: float, py: float, ax: float, ay: float, bx: float, by: float
+) -> float:
+    """Distance from point (px, py) to the closest point on segment AB."""
+    abx, aby = bx - ax, by - ay
+    apx, apy = px - ax, py - ay
+    ab2 = abx * abx + aby * aby
+    if ab2 == 0.0:
+        return math.hypot(apx, apy)
+    t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+    return math.hypot(px - (ax + t * abx), py - (ay + t * aby))
+
+
+def _eat_food(
+    world: World, previous_positions: dict[str, tuple[float, float]]
+) -> None:
+    """Eat pellets whose center the piece's disc covered at any point this tick.
+
+    A light fragment can travel more than its own diameter in one tick, so
+    sampling only the post-move center would skip food sitting on the path.
+    The segment is start-of-tick to post-clamp; a stationary piece degenerates
+    to the original point test.
+    """
     eaten: set[str] = set()
     for player in world.players.values():
         for piece in player.pieces:
             radius = radius_for_mass(piece.mass)
+            start = previous_positions.get(piece.piece_id, (piece.x, piece.y))
             for food in world.food.values():
                 if food.id in eaten:
                     continue
-                if math.hypot(piece.x - food.x, piece.y - food.y) <= radius:
+                if (
+                    _distance_point_to_segment(
+                        food.x, food.y, start[0], start[1], piece.x, piece.y
+                    )
+                    <= radius
+                ):
                     piece.mass += FOOD_MASS
                     radius = radius_for_mass(piece.mass)
                     eaten.add(food.id)
@@ -354,6 +387,8 @@ def _remerge_pieces(world: World) -> None:
                         continue
 
                     total = a.mass + b.mass
+                    if total <= 0.0:
+                        continue
                     a.x = (a.x * a.mass + b.x * b.mass) / total
                     a.y = (a.y * a.mass + b.y * b.mass) / total
                     a.mass = total
