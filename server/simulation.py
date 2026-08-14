@@ -26,6 +26,7 @@ from server.config import (
     OWN_PIECE_OVERLAP,
     REMERGE_SECONDS,
     SEPARATION_PASSES,
+    SPAWN_INVULN_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
     SPLIT_KICK_SPEED,
     speed_for_mass,
@@ -109,6 +110,20 @@ def _can_eat(a: Piece, b: Piece) -> bool:
 
 def _merge_ready(world: World, piece: Piece) -> bool:
     return world.now - piece.split_time >= REMERGE_SECONDS
+
+
+def _protected_player_ids(world: World) -> set[str]:
+    """Players still inside their spawn invulnerability window.
+
+    Protection is one-way: these players cannot be eaten, but they eat
+    normally. It is owned by the player rather than the piece, so splitting
+    during it neither extends nor forfeits it.
+    """
+    return {
+        player.id
+        for player in world.players.values()
+        if world.now - player.spawn_time < SPAWN_INVULN_SECONDS
+    }
 
 
 def _kick_active_during_tick(previous_now: float, piece: Piece) -> bool:
@@ -236,6 +251,7 @@ def _resolve_collisions(world: World) -> None:
         for player in world.players.values()
         for piece in player.pieces
     ]
+    protected = _protected_player_ids(world)
 
     for _ in range(SEPARATION_PASSES):
         for i, (owner_a, a) in enumerate(bodies):
@@ -246,9 +262,13 @@ def _resolve_collisions(world: World) -> None:
                     if _merge_ready(world, a) and _merge_ready(world, b):
                         continue
                     target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
-                elif _can_eat(a, b) or _can_eat(b, a):
+                elif (_can_eat(a, b) and owner_b not in protected) or (
+                    _can_eat(b, a) and owner_a not in protected
+                ):
                     # Never projected, or the predator could never reach the
                     # EAT_OVERLAP depth that `_eat_other_players` waits for.
+                    # A spawn-protected prey is not a live meal, so that pair
+                    # stays solid and the predator is shoved off instead.
                     continue
                 else:
                     target = _distance_for_engulfment(a, b, 0.0)
@@ -335,24 +355,38 @@ def _eat_other_players(world: World) -> None:
     Touching is not enough: `_resolve_collisions` leaves an edible pair free to
     interpenetrate, and the kill only lands once the prey's center has reached
     the predator's rim at EAT_OVERLAP. A graze is a collision.
+
+    A spawn-protected player is never prey, in either direction of the scan.
     """
     eaten: set[str] = set()
     players = list(world.players.values())
+    protected = _protected_player_ids(world)
     for index, attacker in enumerate(players):
         for defender in players[index + 1 :]:
+            attacker_edible = attacker.id not in protected
+            defender_edible = defender.id not in protected
+            if not attacker_edible and not defender_edible:
+                continue
             for a in attacker.pieces:
                 if a.piece_id in eaten:
                     continue
                 for b in defender.pieces:
                     if b.piece_id in eaten or engulfment(a, b) < EAT_OVERLAP:
                         continue
-                    if _can_eat(a, b):
+                    if defender_edible and _can_eat(a, b):
                         a.mass += b.mass
                         eaten.add(b.piece_id)
-                    elif _can_eat(b, a):
+                    elif attacker_edible and _can_eat(b, a):
                         b.mass += a.mass
                         eaten.add(a.piece_id)
                         break
+
+    # Every player's total at the high-water mark of this tick: food and kills
+    # already counted, losses not yet taken. A player eaten below still holds
+    # the piece that is about to be removed, so this is the last mass it really
+    # reached -- the only place that number exists before it is gone.
+    for player in players:
+        player.last_total_mass = sum(piece.mass for piece in player.pieces)
 
     if eaten:
         for player in players:

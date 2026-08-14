@@ -26,7 +26,7 @@ pip install -r requirements.txt
 ## Layout
 
 - `docs/` — the build guidebook and the source build plan it follows.
-- `server/` — Python game server. `main.py` is the aiohttp process; `demo.py` is the Phase 1 printout; `simulation.py` / `world.py` are unchanged from Phase 1.
+- `server/` — Python game server. `main.py` is the aiohttp process, `protocol.py` the wire format and session state, `loop.py` the tick clock, `demo.py` the Phase 1 printout. `simulation.py` and `world.py` are Phase 1's, extended in Phase 2 for player color, RNG spawn points and spawn invulnerability.
 - `client/` — browser code. Currently the Phase 1 verification viewer plus `render.js`, the shared canvas renderer the Phase 3 game client will import. Served by the game server at `/`.
 - `tools/` — the scenario recorder, plus `probe_client.py` for Phase 2 protocol checks.
 - `tests/` — pytest suites.

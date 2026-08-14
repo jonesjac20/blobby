@@ -6,7 +6,12 @@ from contextlib import asynccontextmanager
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from server.config import DEFAULT_COLOR, INITIAL_PLAYER_MASS, TICK_RATE
+from server.config import (
+    DEFAULT_COLOR,
+    INITIAL_PLAYER_MASS,
+    SPAWN_INVULN_SECONDS,
+    TICK_RATE,
+)
 from server.main import _emit, create_app, emit_tick
 from server.protocol import ClientSession, handle_join, serialize_state, update_and_eliminate
 from server.world import World
@@ -44,6 +49,17 @@ async def _join(ws, name: str, color: str = DEFAULT_COLOR) -> dict:
     reply = await asyncio.wait_for(ws.receive_json(), timeout=1)
     assert reply["type"] == "welcome"
     return reply
+
+
+def _expire_spawn_protection(*players) -> None:
+    """Age past the spawn invulnerability a live `join` grants.
+
+    These tests stage a kill on the tick after joining, which the protection
+    exists to prevent. They are about what the protocol does once someone dies,
+    so opt out of the timer rather than simulating three seconds of it.
+    """
+    for player in players:
+        player.spawn_time = -SPAWN_INVULN_SECONDS
 
 
 async def _state_after_tick(app, ws, dt: float = DT) -> dict:
@@ -164,6 +180,7 @@ def test_last_piece_eat_sends_game_over_and_drops_the_player():
             prey.pieces[0].y = predator.pieces[0].y
             predator.pieces[0].mass = 200
             prey.pieces[0].mass = 40
+            _expire_spawn_protection(predator, prey)
 
             await emit_tick(app, DT)
             predator_state = await asyncio.wait_for(predator_ws.receive_json(), timeout=1)
@@ -241,6 +258,7 @@ def test_join_after_death_respawns():
             prey.pieces[0].x = predator.pieces[0].x
             prey.pieces[0].y = predator.pieces[0].y
             predator.pieces[0].mass = 200
+            _expire_spawn_protection(predator, prey)
 
             await emit_tick(app, DT)
             # Drain the death tick: state to both, game_over to prey.
@@ -340,5 +358,129 @@ def test_stale_game_over_is_dropped_if_the_socket_already_respawned():
 
         assert session.player_id is not None
         assert [message["type"] for message in sent] == ["state"]
+
+    asyncio.run(body())
+
+
+def _recording_session(world: World, joined: bool) -> tuple[ClientSession, list[dict]]:
+    session = ClientSession()
+    sent: list[dict] = []
+
+    class FakeWS:
+        closed = False
+
+        async def send_json(self, payload: dict) -> None:
+            sent.append(payload)
+
+    session.ws = FakeWS()
+    if joined:
+        handle_join(
+            world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR}
+        )
+    return session, sent
+
+
+def test_state_naming_the_player_is_held_until_welcome_is_sent():
+    """A join lands mid-broadcast; the snapshot names an id the client has not been given."""
+
+    async def body():
+        world = World(seed=0, food_target=0)
+        session, sent = _recording_session(world, joined=True)
+        assert session.welcome_sent is False
+
+        await _emit([session], serialize_state(world), [])
+
+        assert sent == []
+
+        session.welcome_sent = True
+        await _emit([session], serialize_state(world), [])
+
+        assert [message["type"] for message in sent] == ["state"]
+
+    asyncio.run(body())
+
+
+def test_state_snapshotted_before_the_join_is_not_sent_after_welcome():
+    """The follow-cam id must never be missing from the first state a player receives."""
+
+    async def body():
+        world = World(seed=0, food_target=0)
+        session, sent = _recording_session(world, joined=False)
+        stale = serialize_state(world)
+        handle_join(
+            world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR}
+        )
+        session.welcome_sent = True
+
+        await _emit([session], stale, [])
+
+        assert sent == []
+
+        await _emit([session], serialize_state(world), [])
+
+        assert [message["players"][0]["id"] for message in sent] == [session.player_id]
+
+    asyncio.run(body())
+
+
+def test_a_spectator_receives_every_frame():
+    """The guard keys off a missing own player, which a spectator never has."""
+
+    async def body():
+        world = World(seed=0, food_target=0)
+        player, _ = _recording_session(world, joined=True)
+        spectator, sent = _recording_session(world, joined=False)
+
+        await _emit([spectator], serialize_state(world), [])
+
+        assert [message["type"] for message in sent] == ["state"]
+        assert [p["id"] for p in sent[0]["players"]] == [player.player_id]
+
+    asyncio.run(body())
+
+
+def test_the_first_state_after_welcome_contains_the_welcomed_id():
+    async def body():
+        async with connected_app() as (app, client):
+            ws = await client.ws_connect("/ws")
+            welcome = await _join(ws, "A")
+            state = await _state_after_tick(app, ws)
+            await ws.close()
+
+        assert welcome["id"] in {p["id"] for p in state["players"]}
+
+    asyncio.run(body())
+
+
+def test_two_players_each_see_the_other():
+    async def body():
+        async with connected_app() as (app, client):
+            first = await client.ws_connect("/ws")
+            second = await client.ws_connect("/ws")
+            first_id = (await _join(first, "A", "#ff0000"))["id"]
+            second_id = (await _join(second, "B", "#00ff00"))["id"]
+            first_state = await _state_after_tick(app, first)
+            second_state = await asyncio.wait_for(second.receive_json(), timeout=1)
+            await first.close()
+            await second.close()
+
+        assert {p["id"] for p in first_state["players"]} == {first_id, second_id}
+        assert first_state == second_state
+
+    asyncio.run(body())
+
+
+def test_join_without_a_color_uses_the_default():
+    async def body():
+        async with connected_app() as (app, client):
+            ws = await client.ws_connect("/ws")
+            await ws.send_json({"type": "join", "name": "A"})
+            welcome = await asyncio.wait_for(ws.receive_json(), timeout=1)
+            state = await _state_after_tick(app, ws)
+            await ws.close()
+
+        assert welcome["type"] == "welcome"
+        listed = next(p for p in state["players"] if p["id"] == welcome["id"])
+        assert listed["color"] == DEFAULT_COLOR
 
     asyncio.run(body())

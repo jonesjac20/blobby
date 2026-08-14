@@ -6,19 +6,22 @@ steering stay with the demo until they graduate into the bots.
 """
 
 import asyncio
+import logging
 import math
 
 import pytest
 from conftest import add_piece, add_player
 
-from server.config import TICK_RATE
+from server import simulation
+from server.config import MAX_TICK_SECONDS, TICK_RATE
 from server.demo import (
     _summary_line,
     centroid,
     input_toward_nearest_food,
 )
-from server.loop import next_deadline, sleep_until
+from server.loop import measured_dt, next_deadline, sleep_until, tick_loop
 from server.models import Food
+from server.world import World
 
 # --- centroid -------------------------------------------------------------
 
@@ -119,6 +122,178 @@ def test_next_deadline_slips_when_a_tick_overruns():
     now = 0.1
 
     assert next_deadline(0.0, now, interval) == pytest.approx(now + interval)
+
+
+def test_measured_dt_is_the_elapsed_interval():
+    assert measured_dt(0.05, 0.0) == pytest.approx(0.05)
+
+
+def test_measured_dt_clamps_a_hitch():
+    """A debugger pause must not teleport every blob across the map on the next tick."""
+    assert measured_dt(30.0, 0.0) == MAX_TICK_SECONDS
+
+
+def test_measured_dt_never_runs_the_world_backwards():
+    assert measured_dt(0.0, 1.0) == 0.0
+
+
+def test_tick_loop_advances_sim_time_by_measured_elapsed_not_the_tick_rate():
+    """The loop decides *when* step runs; the clock decides *how much* time passed.
+
+    Pinned separately from test_dt_invariance.py, which never calls the loop.
+    Here every tick takes four times its budget, so a fixed `1 / TICK_RATE` dt
+    would leave world.now at a quarter of the elapsed time.
+    """
+    overrun = 4.0
+
+    class SlowClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = SlowClock()
+
+    async def slow_sleep(seconds: float) -> None:
+        clock.t += seconds * overrun
+
+    async def drive() -> World:
+        world = World(seed=0, food_target=0)
+        stop = asyncio.Event()
+        ticks = 0
+
+        async def emit(payload: dict, deaths: list) -> None:
+            nonlocal ticks
+            ticks += 1
+            if ticks == 10:
+                stop.set()
+
+        await tick_loop(
+            world, [], emit=emit, stop=stop, clock=clock, sleep=slow_sleep
+        )
+        return world
+
+    world = asyncio.run(drive())
+
+    assert world.now == pytest.approx(clock.t)
+    assert world.now > 10.0 / TICK_RATE
+
+
+def test_tick_loop_clamps_a_hitch_instead_of_teleporting():
+    class HitchClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = HitchClock()
+
+    async def hitching_sleep(seconds: float) -> None:
+        clock.t += 5.0
+
+    async def drive() -> World:
+        world = World(seed=0, food_target=0)
+        stop = asyncio.Event()
+
+        async def emit(payload: dict, deaths: list) -> None:
+            stop.set()
+
+        await tick_loop(
+            world, [], emit=emit, stop=stop, clock=clock, sleep=hitching_sleep
+        )
+        return world
+
+    world = asyncio.run(drive())
+
+    assert world.now == pytest.approx(MAX_TICK_SECONDS)
+
+
+def test_tick_loop_survives_a_failing_tick(caplog, monkeypatch):
+    """One bad tick must not leave HTTP serving a world that stopped moving."""
+    caplog.set_level(logging.ERROR, logger="blobby")
+    calls = {"n": 0}
+    real_step = simulation.step
+
+    def flaky_step(world, dt):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ValueError("boom")
+        real_step(world, dt)
+
+    monkeypatch.setattr("server.loop.simulation.step", flaky_step)
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = FakeClock()
+
+    async def fake_sleep(seconds: float) -> None:
+        clock.t += seconds
+
+    async def drive() -> list[dict]:
+        world = World(seed=0, food_target=0)
+        stop = asyncio.Event()
+        emitted: list[dict] = []
+
+        async def emit(payload: dict, deaths: list) -> None:
+            emitted.append(payload)
+            if len(emitted) == 3:
+                stop.set()
+
+        await tick_loop(
+            world, [], emit=emit, stop=stop, clock=clock, sleep=fake_sleep
+        )
+        return emitted
+
+    emitted = asyncio.run(drive())
+
+    assert calls["n"] == 4
+    assert len(emitted) == 3
+    assert "boom" in caplog.text
+
+
+def test_tick_loop_survives_a_failing_broadcast(caplog):
+    caplog.set_level(logging.ERROR, logger="blobby")
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = FakeClock()
+
+    async def fake_sleep(seconds: float) -> None:
+        clock.t += seconds
+
+    async def drive() -> World:
+        world = World(seed=0, food_target=0)
+        stop = asyncio.Event()
+        attempts = 0
+
+        async def emit(payload: dict, deaths: list) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("socket exploded")
+            stop.set()
+
+        await tick_loop(
+            world, [], emit=emit, stop=stop, clock=clock, sleep=fake_sleep
+        )
+        return world
+
+    world = asyncio.run(drive())
+
+    assert world.now > 0.0
+    assert "socket exploded" in caplog.text
 
 
 def test_tick_loop_runs_at_configured_rate():

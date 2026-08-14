@@ -17,6 +17,7 @@ from server.config import (
     MIN_SPLIT_MASS,
     OWN_PIECE_OVERLAP,
     REMERGE_SECONDS,
+    SPAWN_INVULN_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
     SPLIT_KICK_SPEED,
     WORLD_HEIGHT,
@@ -416,6 +417,82 @@ def test_a_graze_does_not_eat_until_the_predator_sinks_in(world):
     prey.x = predator.x + rim * 0.95
     simulation.step(world, TICK)
     assert small.pieces == []
+
+
+# --- spawn invulnerability -------------------------------------------------
+
+
+def test_a_player_staged_by_a_test_is_edible_immediately(world):
+    """The default `spawn_time` is already expired, so Phase 1 staging is unprotected.
+
+    Protection is granted by a live `join`, not by `spawn_player`. If the
+    default ever changes, every eat test in this file starts lying.
+    """
+    big = add_player(world, "big", 500.0, 500.0, mass=200)
+    small = add_player(world, "small", 500.0, 500.0, mass=100)
+
+    assert big.spawn_time <= -SPAWN_INVULN_SECONDS
+
+    simulation.step(world, TICK)
+
+    assert small.pieces == []
+
+
+def test_a_spawn_protected_player_is_not_eaten_until_the_window_closes(world):
+    """A predator bearing down on a fresh spawn shoves it until the window closes."""
+    big = add_player(world, "big", 480.0, 500.0, mass=200, last_input=(1.0, 0.0))
+    small = add_player(world, "small", 520.0, 500.0, mass=100)
+    small.spawn_time = world.now
+
+    advance(world, SPAWN_INVULN_SECONDS - TICK, TICK)
+
+    assert len(small.pieces) == 1
+    assert big.pieces[0].mass == pytest.approx(200)
+
+    advance(world, 1.0, TICK)
+
+    assert small.pieces == []
+    assert big.pieces[0].mass == pytest.approx(300)
+
+
+def test_a_spawn_protected_player_is_solid_rather_than_edible(world):
+    """Protection cannot leave the pair interpenetrating, or the kill just lands late."""
+    big = add_player(world, "big", 480.0, 500.0, mass=200, last_input=(1.0, 0.0))
+    small = add_player(world, "small", 520.0, 500.0, mass=100)
+    small.spawn_time = world.now
+    predator, prey = big.pieces[0], small.pieces[0]
+
+    while world.now < SPAWN_INVULN_SECONDS - TICK:
+        simulation.step(world, TICK)
+        assert simulation.engulfment(predator, prey) < EAT_OVERLAP
+
+    assert len(small.pieces) == 1
+
+
+def test_a_spawn_protected_player_can_still_eat(world):
+    """Protection is one-way: it stops you being a meal, not being a predator."""
+    fresh = add_player(world, "fresh", 500.0, 500.0, mass=200)
+    victim = add_player(world, "victim", 500.0, 500.0, mass=100)
+    fresh.spawn_time = world.now
+
+    simulation.step(world, TICK)
+
+    assert victim.pieces == []
+    assert fresh.pieces[0].mass == pytest.approx(300)
+
+
+def test_spawn_protection_covers_every_piece_of_a_split_player(world):
+    """Protection lives on the player, so splitting neither forfeits nor extends it."""
+    big = add_player(world, "big", 500.0, 500.0, mass=400)
+    small = add_player(world, "small", 500.0, 500.0, mass=100)
+    small.spawn_time = world.now
+    split(world, small)
+    assert len(small.pieces) == 2
+
+    advance(world, SPAWN_INVULN_SECONDS - TICK, TICK)
+
+    assert len(small.pieces) == 2
+    assert big.pieces[0].mass == pytest.approx(400)
 
 
 def test_bounds_hold_when_blobs_are_crushed_into_a_corner(world):

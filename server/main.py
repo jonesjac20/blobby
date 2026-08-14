@@ -30,6 +30,23 @@ STOP_KEY = web.AppKey("stop_ticks", asyncio.Event)
 TASK_KEY = web.AppKey("tick_task", asyncio.Task)
 
 
+def _state_is_stale_for(session: ClientSession, payload: dict) -> bool:
+    """Whether this snapshot would describe a world the socket cannot be in yet.
+
+    A join can land in the middle of the loop below, between `serialize_state`
+    and this socket's turn. Both orderings are wrong for a playing client:
+    a snapshot naming the new player before `welcome` gives it an id it has
+    not been told is its own, and the pre-join snapshot after `welcome` omits
+    the player entirely, so a follow-cam finds nothing. Spectators have no
+    player to be missing and always get the frame.
+    """
+    if session.player_id is None:
+        return False
+    if not session.welcome_sent:
+        return True
+    return all(player["id"] != session.player_id for player in payload["players"])
+
+
 async def _emit(
     sessions: list[ClientSession],
     payload: dict,
@@ -37,6 +54,8 @@ async def _emit(
 ) -> None:
     for session in list(sessions):
         if session.ws is None or session.ws.closed:
+            continue
+        if _state_is_stale_for(session, payload):
             continue
         try:
             await session.ws.send_json(payload)
@@ -93,6 +112,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 if reply is not None:
                     await ws.send_json(reply)
                     if reply.get("type") == "welcome":
+                        session.welcome_sent = True
                         log.info(
                             "join %s peer=%s players=%d sockets=%d",
                             _who(session),

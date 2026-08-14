@@ -11,13 +11,12 @@ import time
 
 from server import simulation
 from server.config import (
-    MAX_TICK_SECONDS,
     SIMULATION_CLOCK_SOURCE,
     TICK_RATE,
     WORLD_HEIGHT,
     WORLD_WIDTH,
 )
-from server.loop import next_deadline, sleep_until
+from server.loop import measured_dt, next_deadline, sleep_until
 from server.models import Player
 from server.world import World
 
@@ -85,7 +84,7 @@ async def run() -> None:
 
     while True:
         now = await sleep_until(deadline)
-        dt = min(now - last, MAX_TICK_SECONDS)
+        dt = measured_dt(now, last)
         last = now
         tick += 1
 

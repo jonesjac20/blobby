@@ -30,6 +30,10 @@ class ClientSession:
     color: str = DEFAULT_COLOR
     peak_mass: float = 0.0
     spawn_sim_time: float | None = None
+    # False between spawning the player and the socket actually receiving its
+    # welcome. A state broadcast in that window would name a player the client
+    # cannot follow yet.
+    welcome_sent: bool = False
 
 
 def normalize_name(value: object) -> str:
@@ -140,7 +144,12 @@ def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     session.name = msg["name"]
     session.color = msg["color"]
     player = world.spawn_player(session.name, color=session.color)
+    # A spawn point is drawn from the RNG and clamped into the rectangle, never
+    # away from other bodies, so this is the only thing stopping a join from
+    # landing inside a predator and dying on the next tick.
+    player.spawn_time = world.now
     session.player_id = player.id
+    session.welcome_sent = False
     session.peak_mass = sum(piece.mass for piece in player.pieces)
     session.spawn_sim_time = world.now
     return welcome_message(player.id)
@@ -168,6 +177,10 @@ def update_and_eliminate(
     Returns (session, game_over payload) pairs for sockets that were playing.
     A player with no session is still removed, so the broadcast cannot emit
     ghosts.
+
+    Runs after `simulation.step`, which means a player killed this tick is
+    already down to zero pieces here. Mass it gained before dying comes from
+    `Player.last_total_mass`, recorded mid-tick for exactly this reason.
     """
     session_by_player = {
         session.player_id: session for session in sessions if session.player_id
@@ -178,7 +191,13 @@ def update_and_eliminate(
     for player in list(world.players.values()):
         session = session_by_player.get(player.id)
         if session is not None:
-            total = sum(piece.mass for piece in player.pieces)
+            # A dead player's pieces are already gone, so its own last total is
+            # the only record of mass it gained on the tick that killed it.
+            total = (
+                sum(piece.mass for piece in player.pieces)
+                if player.pieces
+                else player.last_total_mass
+            )
             if total > session.peak_mass:
                 session.peak_mass = total
         if player.pieces:

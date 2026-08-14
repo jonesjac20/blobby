@@ -8,12 +8,15 @@ simulation.step, by an interval the server measured itself.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 
 from server import simulation
 from server.config import MAX_TICK_SECONDS, SIMULATION_CLOCK_SOURCE, TICK_RATE
 from server.protocol import ClientSession, serialize_state, update_and_eliminate
 from server.world import World
+
+log = logging.getLogger("blobby")
 
 Emit = Callable[[dict, list[tuple[ClientSession, dict]]], Awaitable[None]]
 
@@ -24,6 +27,19 @@ def next_deadline(previous: float, now: float, interval: float) -> float:
     if nxt < now:
         return now + interval
     return nxt
+
+
+def measured_dt(now: float, last: float) -> float:
+    """Sim seconds to advance for a tick that woke at `now`, having last run at `last`.
+
+    Deliberately not `1 / TICK_RATE`: the loop reports the time it actually
+    took, so a tick that runs long is honest and the simulation never depends
+    on the tick rate holding. MAX_TICK_SECONDS caps a hitch so sim time falls
+    behind rather than teleporting every blob. The floor is defensive - the
+    clock is monotonic, so a negative interval should be impossible, and a
+    negative dt would run the world backwards if one ever appeared.
+    """
+    return min(max(now - last, 0.0), MAX_TICK_SECONDS)
 
 
 async def sleep_until(
@@ -58,7 +74,15 @@ async def tick_loop(
     clock=SIMULATION_CLOCK_SOURCE,
     sleep=asyncio.sleep,
 ) -> None:
-    """Sleep to a 1/TICK_RATE deadline, step, then emit. Slips on overrun."""
+    """Sleep to a 1/TICK_RATE deadline, step, then emit. Slips on overrun.
+
+    A tick that raises is logged and skipped rather than killing the task. The
+    alternative is a server whose HTTP and WebSocket endpoints still answer
+    while the world silently stopped moving, which looks like a network fault
+    and is far harder to diagnose than a traceback in the log. A throw partway
+    through `step` can leave the world half-mutated; for a POC that is the
+    better trade.
+    """
     interval = 1.0 / TICK_RATE
     last = clock()
     deadline = last + interval
@@ -66,8 +90,21 @@ async def tick_loop(
         now = await sleep_until(deadline, clock=clock, sleep=sleep)
         if stop.is_set():
             break
-        dt = min(now - last, MAX_TICK_SECONDS)
+        dt = measured_dt(now, last)
         last = now
-        payload, deaths = process_tick(world, sessions, dt)
+        try:
+            payload, deaths = process_tick(world, sessions, dt)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("tick failed, skipping to the next one")
+            deadline = next_deadline(deadline, clock(), interval)
+            continue
+
         deadline = next_deadline(deadline, clock(), interval)
-        await emit(payload, deaths)
+        try:
+            await emit(payload, deaths)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("broadcast failed, skipping to the next tick")

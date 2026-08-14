@@ -4,7 +4,7 @@ Work banked during the Phase 1 close-out review. **None of it blocks Phase 2.** 
 
 ## Read this first
 
-You are picking up a hobby agar.io clone. The server is Python 3.13 standard library only, the client is vanilla ES modules with no build step, and tests are pytest. Start with [`GUIDEBOOK.md`](GUIDEBOOK.md) in this folder for the phase structure and the divergences from [`agario_build_plan.md`](agario_build_plan.md); this document assumes you have read the Phase 1 section.
+You are picking up a hobby agar.io clone. The server is Python 3.13 with aiohttp as its only runtime dependency (the simulation itself is standard library), the client is vanilla ES modules with no build step, and tests are pytest. Start with [`GUIDEBOOK.md`](GUIDEBOOK.md) in this folder for the phase structure and the divergences from [`agario_build_plan.md`](agario_build_plan.md); this document assumes you have read the Phase 1 section.
 
 Three things to know before you touch anything:
 

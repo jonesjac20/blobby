@@ -3,8 +3,16 @@
 import pytest
 from conftest import add_player
 
-from server.config import DEFAULT_COLOR, INITIAL_PLAYER_MASS, NAME_MAX_LEN
+from server.config import (
+    DEFAULT_COLOR,
+    FOOD_MASS,
+    INITIAL_PLAYER_MASS,
+    NAME_MAX_LEN,
+    SPAWN_INVULN_SECONDS,
+    TICK_RATE,
+)
 from server.loop import process_tick
+from server.models import Food
 from server.protocol import (
     ClientSession,
     handle_join,
@@ -146,6 +154,30 @@ def test_empty_piece_list_sends_game_over_and_removes_the_player(world):
     ]
 
 
+def test_peak_mass_counts_mass_gained_on_the_tick_that_kills_you(world):
+    """Eat a pellet and get eaten in the same step; the pellet still counts.
+
+    `update_and_eliminate` runs after `simulation.step`, so the victim's pieces
+    are already gone by the time peak mass is read. Reading `sum(pieces)` there
+    reports the previous tick's total and silently loses the last mouthful.
+    """
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "prey", "color": DEFAULT_COLOR})
+    prey = world.players[session.player_id]
+    prey.spawn_time = -SPAWN_INVULN_SECONDS
+    prey.pieces[0].mass = 100.0
+    predator = add_player(world, "pred", prey.pieces[0].x, prey.pieces[0].y, mass=200)
+    world.food["pellet"] = Food(
+        id="pellet", x=prey.pieces[0].x, y=prey.pieces[0].y
+    )
+
+    _, deaths = process_tick(world, [session], dt=1.0 / TICK_RATE)
+
+    assert world.food == {}
+    assert predator.pieces[0].mass == pytest.approx(200 + 100 + FOOD_MASS)
+    assert [payload["peak_mass"] for _, payload in deaths] == [100 + FOOD_MASS]
+
+
 def test_empty_piece_player_without_a_session_is_still_removed(world):
     player = add_player(world, "ghost", 100.0, 100.0)
     player.pieces.clear()
@@ -171,6 +203,59 @@ def test_join_after_death_respawns(world):
     assert second["id"] != first["id"]
     assert second["id"] in world.players
     assert world.players[second["id"]].color == "#00ff00"
+
+
+def test_join_grants_spawn_protection(world):
+    session = ClientSession()
+    world.now = 8.0
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+
+    assert world.players[session.player_id].spawn_time == 8.0
+
+
+def test_a_joining_player_is_not_eaten_until_spawn_protection_expires(world):
+    """The scenario the protection exists for: joining on top of a grown player.
+
+    The hunter is spawned and left to outlive its own protection, then the prey
+    joins directly inside it. Spawn positions come from the RNG, so this is a
+    real join outcome, not a contrived one.
+    """
+    tick = 1.0 / TICK_RATE
+    hunter_session = ClientSession()
+    handle_join(
+        world, hunter_session, {"type": "join", "name": "hunter", "color": DEFAULT_COLOR}
+    )
+    hunter = world.players[hunter_session.player_id]
+    hunter.pieces[0].mass = 200
+    while world.now < SPAWN_INVULN_SECONDS:
+        process_tick(world, [hunter_session], tick)
+
+    prey_session = ClientSession()
+    handle_join(
+        world, prey_session, {"type": "join", "name": "prey", "color": DEFAULT_COLOR}
+    )
+    prey_id = prey_session.player_id
+    sessions = [hunter_session, prey_session]
+
+    def stack_prey_on_hunter() -> None:
+        prey = world.players[prey_id]
+        prey.pieces[0].x = hunter.pieces[0].x
+        prey.pieces[0].y = hunter.pieces[0].y
+
+    joined_at = world.now
+    while world.now < joined_at + SPAWN_INVULN_SECONDS - tick:
+        stack_prey_on_hunter()
+        _, deaths = process_tick(world, sessions, tick)
+        assert deaths == []
+        assert prey_id in world.players
+
+    # Protection has lapsed; the same stacking is now fatal.
+    stack_prey_on_hunter()
+    _, deaths = process_tick(world, sessions, tick)
+
+    assert [session for session, _ in deaths] == [prey_session]
+    assert deaths[0][1]["type"] == "game_over"
+    assert prey_id not in world.players
 
 
 def test_process_tick_advances_sim_time_and_snapshots(world):
