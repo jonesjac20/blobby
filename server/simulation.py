@@ -114,17 +114,21 @@ def _merge_ready(world: World, piece: Piece) -> bool:
     return world.now - piece.split_time >= REMERGE_SECONDS
 
 
-def _protected_player_ids(world: World) -> set[str]:
-    """Players still inside their spawn invulnerability window.
+def is_spawn_protected(world: World, player: Player) -> bool:
+    """Whether this player is still inside the spawn invulnerability window.
 
-    Protection is one-way: these players cannot be eaten, but they eat
-    normally. It is owned by the player rather than the piece, so splitting
-    during it neither extends nor forfeits it.
+    Protection is one-way: they cannot be eaten, but they eat normally. It is
+    owned by the player rather than the piece, so splitting during it neither
+    extends nor forfeits it. The same test rides the wire as `protected`.
     """
+    return world.now - player.spawn_time < SPAWN_INVULN_SECONDS
+
+
+def _protected_player_ids(world: World) -> set[str]:
     return {
         player.id
         for player in world.players.values()
-        if world.now - player.spawn_time < SPAWN_INVULN_SECONDS
+        if is_spawn_protected(world, player)
     }
 
 

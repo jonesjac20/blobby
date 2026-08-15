@@ -39,6 +39,7 @@ const WORLD_RECT = [0, 0, WORLD.width, WORLD.height];
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
 const massEl = document.getElementById("mass");
+const protectedEl = document.getElementById("protected");
 const menu = document.getElementById("menu");
 const gameOver = document.getElementById("game-over");
 const joinForm = document.getElementById("join-form");
@@ -367,6 +368,7 @@ function tick(timestamp) {
   if (mode === "playing" && followed && followId === selfId) {
     hud.hidden = false;
     massEl.textContent = String(Math.round(playerMass(followed)));
+    protectedEl.hidden = !followed.protected;
   } else if (mode === "playing") {
     hud.hidden = true;
   }

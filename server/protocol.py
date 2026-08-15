@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -158,6 +159,7 @@ def serialize_state(world: World) -> dict:
                 "id": player.id,
                 "name": player.name,
                 "color": player.color,
+                "protected": simulation.is_spawn_protected(world, player),
                 "pieces": [
                     {
                         "piece_id": piece.piece_id,
@@ -203,6 +205,24 @@ def handle_message(world: World, session: ClientSession, msg: dict) -> dict | No
     return None
 
 
+def _debug_spawn_xy() -> tuple[float, float] | None:
+    """Pinned spawn for local feel-testing. Not a join field — that would be a cheat.
+
+    `BLOBBY_DEBUG_SPAWN=x,y` is read on each join so a test can monkeypatch it.
+    Malformed values are ignored and the RNG spawn runs as usual.
+    """
+    raw = os.environ.get("BLOBBY_DEBUG_SPAWN", "").strip()
+    if not raw:
+        return None
+    parts = raw.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        return float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+
+
 def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     if playing_player(world, session) is not None:
         return None
@@ -211,7 +231,13 @@ def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     # else; nothing needs to echo it back on `welcome`.
     session.name = unique_name(world, msg["name"])
     session.color = msg["color"]
-    player = world.spawn_player(session.name, color=session.color)
+    spawn = _debug_spawn_xy()
+    if spawn is None:
+        player = world.spawn_player(session.name, color=session.color)
+    else:
+        player = world.spawn_player(
+            session.name, x=spawn[0], y=spawn[1], color=session.color
+        )
     # A spawn point is drawn from the RNG and clamped into the rectangle, never
     # away from other bodies, so this is the only thing stopping a join from
     # landing inside a predator and dying on the next tick.

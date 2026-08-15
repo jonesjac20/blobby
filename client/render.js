@@ -5,7 +5,7 @@
  * 4 of the build plan:
  *
  *   { type: "state",
- *     players: [{ id, name, color, pieces: [{ piece_id, x, y, mass }] }],
+ *     players: [{ id, name, color, protected, pieces: [{ piece_id, x, y, mass }] }],
  *     food:    [{ id, x, y }] }
  *
  * Nothing in this file knows where that state came from. The Phase 1 viewer
@@ -295,6 +295,23 @@ function drawPieces(ctx, state, camera, viewport, labels) {
     ctx.strokeStyle = color.stroke;
     ctx.stroke();
   }
+
+  // Spawn protection is otherwise invisible: a predator walking into a fresh
+  // join gets shoved and reads as broken collision. The ring is the tell.
+  // Drawn after every disc so a bigger blob cannot hide a smaller one's shield.
+  ctx.save();
+  ctx.setLineDash([5, 4]);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255, 209, 102, 0.95)";
+  for (const { player, piece } of drawOrder) {
+    if (!player.protected) continue;
+    const point = worldToScreen(camera, viewport, piece.x, piece.y);
+    const radius = radiusForMass(piece.mass) * camera.scale;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, Math.max(radius, 2) + 4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
 
   if (!labels) return;
 

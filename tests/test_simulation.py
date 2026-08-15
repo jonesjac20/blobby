@@ -504,16 +504,24 @@ def test_a_spawn_protected_player_can_still_eat(world):
 
 
 def test_spawn_protection_covers_every_piece_of_a_split_player(world):
-    """Protection lives on the player, so splitting neither forfeits nor extends it."""
+    """Protection lives on the player, so every fragment stays uneatable and solid.
+
+    Splitting neither forfeits nor extends the window. A predator overlapping
+    either half is shoved rather than left to sink in until the timer dies.
+    """
     big = add_player(world, "big", 500.0, 500.0, mass=400)
     small = add_player(world, "small", 500.0, 500.0, mass=100)
     small.spawn_time = world.now
     split(world, small)
     assert len(small.pieces) == 2
+    predator = big.pieces[0]
 
-    advance(world, SPAWN_INVULN_SECONDS - TICK, TICK)
+    while world.now < SPAWN_INVULN_SECONDS - TICK:
+        simulation.step(world, TICK)
+        assert len(small.pieces) == 2
+        for prey in small.pieces:
+            assert simulation.engulfment(predator, prey) < EAT_OVERLAP
 
-    assert len(small.pieces) == 2
     assert big.pieces[0].mass == pytest.approx(400)
 
 

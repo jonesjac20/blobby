@@ -13,6 +13,7 @@ from server.config import (
     SPAWN_INVULN_SECONDS,
     TICK_RATE,
 )
+from server import simulation
 from server.loop import process_tick
 from server.models import Food
 from server.protocol import (
@@ -80,6 +81,7 @@ def test_serialize_state_matches_wire_shape_and_includes_color(world):
             "id": player.id,
             "name": "A",
             "color": "#ff0000",
+            "protected": False,
             "pieces": [
                 {
                     "piece_id": player.pieces[0].piece_id,
@@ -264,6 +266,58 @@ def test_join_grants_spawn_protection(world):
     handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
 
     assert world.players[session.player_id].spawn_time == 8.0
+
+
+def test_serialize_state_marks_a_live_join_protected_until_the_window_closes(world):
+    """The ring on screen is this flag. A staged player stays false."""
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+    player = world.players[session.player_id]
+
+    listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
+    assert listed["protected"] is True
+
+    world.now = player.spawn_time + SPAWN_INVULN_SECONDS
+    listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
+    assert listed["protected"] is False
+
+
+def test_serialize_state_keeps_protected_after_a_split(world):
+    """The ring is a player flag, so every fragment of a protected split draws it."""
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+    player = world.players[session.player_id]
+    player.last_input = (1.0, 0.0)
+    assert simulation.try_split(world, player) == 1
+
+    listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
+    assert listed["protected"] is True
+    assert len(listed["pieces"]) == 2
+
+
+def test_join_honours_debug_spawn_env(world, monkeypatch):
+    monkeypatch.setenv("BLOBBY_DEBUG_SPAWN", "100,200")
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+    piece = world.players[session.player_id].pieces[0]
+    assert piece.x == pytest.approx(100.0)
+    assert piece.y == pytest.approx(200.0)
+
+
+def test_join_ignores_a_malformed_debug_spawn_env(monkeypatch):
+    monkeypatch.setenv("BLOBBY_DEBUG_SPAWN", "nope")
+    pinned = World(seed=0, food_target=0)
+    handle_join(
+        pinned, ClientSession(), {"type": "join", "name": "A", "color": DEFAULT_COLOR}
+    )
+    monkeypatch.delenv("BLOBBY_DEBUG_SPAWN")
+    natural = World(seed=0, food_target=0)
+    handle_join(
+        natural, ClientSession(), {"type": "join", "name": "A", "color": DEFAULT_COLOR}
+    )
+    a = next(iter(pinned.players.values())).pieces[0]
+    b = next(iter(natural.players.values())).pieces[0]
+    assert (a.x, a.y) == (b.x, b.y)
 
 
 def test_a_joining_player_is_not_eaten_until_spawn_protection_expires(world):

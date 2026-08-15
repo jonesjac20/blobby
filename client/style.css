@@ -428,9 +428,23 @@ body.game .hud {
   top: 16px;
   left: 18px;
   z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
   color: var(--text);
   font: 20px/1.2 var(--mono);
   pointer-events: none;
+}
+
+body.game .hud[hidden] {
+  display: none;
+}
+
+body.game .hud .protected {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
 }
 
 body.game .overlay {
