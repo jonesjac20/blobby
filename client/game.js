@@ -39,6 +39,7 @@ const WORLD_RECT = [0, 0, WORLD.width, WORLD.height];
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
 const massEl = document.getElementById("mass");
+const protectedEl = document.getElementById("protected");
 const menu = document.getElementById("menu");
 const gameOver = document.getElementById("game-over");
 const joinForm = document.getElementById("join-form");
@@ -297,19 +298,9 @@ function topmostPlayerAt(snapshot, viewport, sx, sy) {
   return null;
 }
 
-function pointerOnCanvas(event, viewport) {
+function pointerOnCanvas(event) {
   const rect = canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  // A click can land after a resize and before the next frame rewrites
-  // lastDraw. Map into that frame's viewport so screenToWorld uses the same
-  // size the camera was computed for, which is also what is still on screen
-  // (the old bitmap, stretched).
-  if (!viewport || !rect.width || !rect.height) return { x, y };
-  return {
-    x: x * (viewport.width / rect.width),
-    y: y * (viewport.height / rect.height),
-  };
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
 
 function maybeSendInput(snapshot, viewport, now) {
@@ -377,6 +368,7 @@ function tick(timestamp) {
   if (mode === "playing" && followed && followId === selfId) {
     hud.hidden = false;
     massEl.textContent = String(Math.round(playerMass(followed)));
+    protectedEl.hidden = !followed.protected;
   } else if (mode === "playing") {
     hud.hidden = true;
   }
@@ -413,7 +405,7 @@ canvas.addEventListener("pointermove", (event) => {
 
 canvas.addEventListener("click", (event) => {
   if (mode !== "spectating" || !lastDraw) return;
-  const point = pointerOnCanvas(event, lastDraw.viewport);
+  const point = pointerOnCanvas(event);
   const hit = topmostPlayerAt(lastDraw.snapshot, lastDraw.viewport, point.x, point.y);
   if (hit) {
     followId = hit;

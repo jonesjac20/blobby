@@ -13,6 +13,7 @@ from server.config import (
     SPAWN_INVULN_SECONDS,
     TICK_RATE,
 )
+from server import simulation
 from server.loop import process_tick
 from server.models import Food
 from server.protocol import (
@@ -279,6 +280,19 @@ def test_serialize_state_marks_a_live_join_protected_until_the_window_closes(wor
     world.now = player.spawn_time + SPAWN_INVULN_SECONDS
     listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
     assert listed["protected"] is False
+
+
+def test_serialize_state_keeps_protected_after_a_split(world):
+    """The ring is a player flag, so every fragment of a protected split draws it."""
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+    player = world.players[session.player_id]
+    player.last_input = (1.0, 0.0)
+    assert simulation.try_split(world, player) == 1
+
+    listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
+    assert listed["protected"] is True
+    assert len(listed["pieces"]) == 2
 
 
 def test_join_honours_debug_spawn_env(world, monkeypatch):
