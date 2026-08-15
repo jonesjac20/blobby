@@ -1,4 +1,358 @@
 /**
- * Phase 3 game client. Markup lives in index.html; this file is wired in the
- * next slice (render loop, WebSocket, interpolation, follow-cam, input).
+ * Phase 3 game client. Drives render.js from a /ws connection.
+ *
+ * Connects on load and does not send join until Play. Food is held separately
+ * and spliced onto a copy of the interpolated snapshot at draw time.
  */
+
+import {
+  createCamera,
+  drawWorld,
+  fitCamera,
+  followCamera,
+  interpolateStates,
+  playerCentroid,
+  playerMass,
+  radiusForMass,
+  resizeCanvas,
+  screenToWorld,
+  worldToScreen,
+} from "./render.js";
+
+const TICK_SECONDS = 1 / 30;
+const INPUT_INTERVAL_MS = 1000 / 20;
+const FOLLOW_SMOOTHING = 6;
+const DEADZONE_PX = 8;
+const MAX_DT = 0.1;
+const WORLD = { width: 1200, height: 1200 };
+const WORLD_RECT = [0, 0, 1200, 1200];
+
+const canvas = document.getElementById("game-canvas");
+const hud = document.getElementById("hud");
+const massEl = document.getElementById("mass");
+const menu = document.getElementById("menu");
+const gameOver = document.getElementById("game-over");
+const joinForm = document.getElementById("join-form");
+const nameInput = document.getElementById("name");
+const colorInput = document.getElementById("color");
+const playBtn = document.getElementById("play");
+const spectateBtn = document.getElementById("spectate");
+const customizeBtn = document.getElementById("customize");
+const respawnBtn = document.getElementById("respawn");
+const peakMassEl = document.getElementById("peak-mass");
+const survivalEl = document.getElementById("survival");
+
+canvas.tabIndex = 0;
+
+/** @typedef {"menu" | "playing" | "spectating" | "gameover"} Mode */
+
+/** @type {Mode} */
+let mode = "menu";
+/** @type {WebSocket | null} */
+let socket = null;
+let pendingJoin = false;
+/** @type {string | null} */
+let selfId = null;
+/** @type {string | null} */
+let followId = null;
+let snapCamera = false;
+
+let previousState = null;
+let nextState = null;
+let nextArrivedAt = 0;
+let latestFood = [];
+
+/** @type {{ x: number, y: number } | null} */
+let pointer = null;
+let lastInputAt = 0;
+let lastTimestamp = 0;
+
+const camera = createCamera();
+/** @type {{ snapshot: object, viewport: { width: number, height: number } } | null} */
+let lastDraw = null;
+
+function wsUrl() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${location.host}/ws`;
+}
+
+function socketIsOpen() {
+  return socket !== null && socket.readyState === WebSocket.OPEN;
+}
+
+function sendJson(payload) {
+  if (!socketIsOpen()) return;
+  socket.send(JSON.stringify(payload));
+}
+
+function syncJoinButtons() {
+  const open = socketIsOpen();
+  playBtn.disabled = !open;
+  respawnBtn.disabled = !open;
+}
+
+function blurOverlayButtons() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return;
+  if (menu.contains(active) || gameOver.contains(active)) active.blur();
+}
+
+function focusCanvas() {
+  blurOverlayButtons();
+  canvas.focus();
+}
+
+function connect() {
+  socket = new WebSocket(wsUrl());
+  socket.addEventListener("open", () => {
+    syncJoinButtons();
+    if (pendingJoin) {
+      pendingJoin = false;
+      sendJoin();
+    }
+  });
+  socket.addEventListener("message", onMessage);
+  socket.addEventListener("close", () => {
+    socket = null;
+    pendingJoin = false;
+    syncJoinButtons();
+  });
+}
+
+function onMessage(event) {
+  let msg;
+  try {
+    msg = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (!msg || typeof msg !== "object") return;
+
+  switch (msg.type) {
+    case "welcome":
+      selfId = msg.id;
+      followId = null;
+      snapCamera = true;
+      break;
+    case "food":
+      latestFood = (msg.food || []).map(([x, y]) => ({ x, y }));
+      break;
+    case "state":
+      previousState = nextState;
+      nextState = msg;
+      nextArrivedAt = performance.now();
+      if (mode === "playing" && selfId) {
+        const mine = msg.players.find((player) => player.id === selfId);
+        if (mine && mine.pieces.length) {
+          if (followId !== selfId) snapCamera = true;
+          followId = selfId;
+        }
+      }
+      break;
+    case "game_over":
+      if (mode !== "playing") break;
+      mode = "gameover";
+      selfId = null;
+      followId = null;
+      hud.hidden = true;
+      peakMassEl.textContent = String(Math.round(msg.peak_mass));
+      survivalEl.textContent = Number(msg.survival_seconds).toFixed(1);
+      gameOver.hidden = false;
+      blurOverlayButtons();
+      break;
+    default:
+      break;
+  }
+}
+
+function sendJoin() {
+  if (!socketIsOpen()) {
+    pendingJoin = true;
+    return;
+  }
+  sendJson({
+    type: "join",
+    name: nameInput.value,
+    color: colorInput.value,
+  });
+  enterPlaying();
+}
+
+function enterPlaying() {
+  mode = "playing";
+  followId = null;
+  menu.hidden = true;
+  gameOver.hidden = true;
+  hud.hidden = true;
+  focusCanvas();
+}
+
+function showMenu() {
+  mode = "menu";
+  pendingJoin = false;
+  selfId = null;
+  followId = null;
+  hud.hidden = true;
+  gameOver.hidden = true;
+  menu.hidden = false;
+  blurOverlayButtons();
+}
+
+function enterSpectate() {
+  pendingJoin = false;
+  mode = "spectating";
+  selfId = null;
+  followId = null;
+  hud.hidden = true;
+  menu.hidden = true;
+  gameOver.hidden = true;
+  focusCanvas();
+}
+
+function livingPlayers(snapshot) {
+  return snapshot.players.filter((player) => player.pieces.length);
+}
+
+function cycleFollow(snapshot) {
+  const living = livingPlayers(snapshot);
+  if (!living.length) {
+    followId = null;
+    return;
+  }
+  const ids = living.map((player) => player.id);
+  const index = ids.indexOf(followId);
+  followId = ids[(index + 1) % ids.length];
+  snapCamera = true;
+}
+
+function topmostPlayerAt(snapshot, viewport, sx, sy) {
+  const world = screenToWorld(camera, viewport, sx, sy);
+  const discs = [];
+  for (const player of snapshot.players) {
+    for (const piece of player.pieces) discs.push({ player, piece });
+  }
+  // drawPieces paints largest first, smallest last — hit the topmost disc.
+  discs.sort((a, b) => a.piece.mass - b.piece.mass);
+  for (const { player, piece } of discs) {
+    const radius = radiusForMass(piece.mass);
+    if (Math.hypot(world.x - piece.x, world.y - piece.y) <= radius) {
+      return player.id;
+    }
+  }
+  return null;
+}
+
+function pointerOnCanvas(event) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+function maybeSendInput(snapshot, viewport, now) {
+  if (mode !== "playing" || !socketIsOpen() || pointer === null || !selfId) return;
+  const player = snapshot.players.find((candidate) => candidate.id === selfId);
+  if (!player || !player.pieces.length) return;
+  if (now - lastInputAt < INPUT_INTERVAL_MS) return;
+  lastInputAt = now;
+
+  const centroid = playerCentroid(player);
+  if (!centroid) return;
+  const origin = worldToScreen(camera, viewport, centroid.x, centroid.y);
+  const dx = pointer.x - origin.x;
+  const dy = pointer.y - origin.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < DEADZONE_PX) {
+    sendJson({ type: "input", dx: 0, dy: 0 });
+    return;
+  }
+  sendJson({ type: "input", dx: dx / dist, dy: dy / dist });
+}
+
+function followedPlayer(snapshot) {
+  if (!followId) return null;
+  const player = snapshot.players.find((candidate) => candidate.id === followId);
+  if (!player || !player.pieces.length) return null;
+  return player;
+}
+
+function tick(timestamp) {
+  requestAnimationFrame(tick);
+  const dt = lastTimestamp ? Math.min((timestamp - lastTimestamp) / 1000, MAX_DT) : 0;
+  lastTimestamp = timestamp;
+
+  const { ctx, viewport } = resizeCanvas(canvas);
+  if (!nextState) {
+    ctx.clearRect(0, 0, viewport.width, viewport.height);
+    return;
+  }
+
+  const elapsed = (timestamp - nextArrivedAt) / 1000;
+  const alpha = Math.min(Math.max(elapsed / TICK_SECONDS, 0), 1);
+  const interpolated = interpolateStates(previousState, nextState, alpha);
+  const snapshot = { ...interpolated, food: latestFood };
+
+  if (mode === "spectating" && followId && !followedPlayer(snapshot)) {
+    cycleFollow(snapshot);
+  }
+
+  const followed = followedPlayer(snapshot);
+  const canFollow =
+    followed &&
+    ((mode === "playing" && followId === selfId) || mode === "spectating");
+
+  if (canFollow) {
+    const options = snapCamera
+      ? { smoothing: 0, dt: 0 }
+      : { smoothing: FOLLOW_SMOOTHING, dt };
+    followCamera(camera, snapshot, followId, viewport, options);
+    snapCamera = false;
+  } else {
+    fitCamera(camera, WORLD_RECT, viewport);
+  }
+
+  if (mode === "playing" && followed && followId === selfId) {
+    hud.hidden = false;
+    massEl.textContent = String(Math.round(playerMass(followed)));
+  } else if (mode === "playing") {
+    hud.hidden = true;
+  }
+
+  drawWorld(ctx, snapshot, camera, viewport, { world: WORLD });
+  lastDraw = { snapshot, viewport };
+  maybeSendInput(snapshot, viewport, timestamp);
+}
+
+joinForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  sendJoin();
+});
+playBtn.addEventListener("click", () => sendJoin());
+spectateBtn.addEventListener("click", () => enterSpectate());
+customizeBtn.addEventListener("click", () => showMenu());
+respawnBtn.addEventListener("click", () => sendJoin());
+
+canvas.addEventListener("pointermove", (event) => {
+  pointer = pointerOnCanvas(event);
+});
+
+canvas.addEventListener("click", (event) => {
+  if (mode !== "spectating" || !lastDraw) return;
+  const point = pointerOnCanvas(event);
+  const hit = topmostPlayerAt(lastDraw.snapshot, lastDraw.viewport, point.x, point.y);
+  if (hit) {
+    followId = hit;
+    snapCamera = true;
+    return;
+  }
+  cycleFollow(lastDraw.snapshot);
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (mode !== "spectating") return;
+  event.preventDefault();
+  showMenu();
+});
+
+syncJoinButtons();
+connect();
+requestAnimationFrame(tick);

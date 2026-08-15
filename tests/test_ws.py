@@ -518,6 +518,37 @@ def test_game_client_files_are_served():
     asyncio.run(body())
 
 
+def test_game_js_is_wired_to_the_protocol():
+    async def body():
+        async with connected_app() as (app, client):
+            response = await client.get("/game.js")
+            text = await response.text()
+
+        assert "WebSocket" in text
+        assert "interpolateStates" in text
+        assert '"join"' in text
+        assert "game_over" in text
+        assert "location.host" in text
+        assert "hostname" not in text
+
+    asyncio.run(body())
+
+
+def test_render_js_keeps_player_color():
+    async def body():
+        async with connected_app() as (app, client):
+            response = await client.get("/render.js")
+            text = await response.text()
+
+        assert "...player" in text or "...player," in text
+        assert "...next" in text
+        assert "colorsFromHex" in text
+        assert "0.75" in text
+        assert "screenToWorld" in text
+
+    asyncio.run(body())
+
+
 def test_viewer_and_recordings_are_not_public():
     async def body():
         async with connected_app() as (app, client):

@@ -5,7 +5,7 @@
  * 4 of the build plan:
  *
  *   { type: "state",
- *     players: [{ id, name, pieces: [{ piece_id, x, y, mass }] }],
+ *     players: [{ id, name, color, pieces: [{ piece_id, x, y, mass }] }],
  *     food:    [{ id, x, y }] }
  *
  * Nothing in this file knows where that state came from. The Phase 1 viewer
@@ -48,6 +48,26 @@ export function colorForId(id) {
     fill: `hsla(${hue}, 70%, 55%, 0.75)`,
     stroke: `hsl(${hue}, 75%, 42%)`,
     text: `hsl(${hue}, 85%, 88%)`,
+  };
+}
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * Same roles as `colorForId`: 0.75-alpha fill, darker stroke, light text.
+ * Opaque hex would hide cluster overlap the viewer draws translucent.
+ */
+export function colorsFromHex(hex) {
+  if (typeof hex !== "string" || !HEX_COLOR.test(hex)) return null;
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const { h, s, l } = rgbToHsl(r, g, b);
+  return {
+    hue: h,
+    fill: `hsla(${h}, ${s}%, ${l}%, 0.75)`,
+    stroke: `hsl(${h}, ${Math.min(100, s + 5)}%, ${clamp(l - 13, 0, 100)}%)`,
+    text: `hsl(${h}, ${Math.min(100, s + 15)}%, ${clamp(Math.max(l + 33, 88), 0, 100)}%)`,
   };
 }
 
@@ -114,15 +134,25 @@ export function worldToScreen(camera, viewport, x, y) {
   };
 }
 
+export function screenToWorld(camera, viewport, x, y) {
+  return {
+    x: (x - viewport.width / 2) / camera.scale + camera.x,
+    y: (y - viewport.height / 2) / camera.scale + camera.y,
+  };
+}
+
 // --- interpolation --------------------------------------------------------
 
 /**
  * Blend two consecutive snapshots. Section 6 of the build plan calls this
  * non-optional: 30Hz state rendered at 60fps+ visibly stutters without it.
  *
- * Pieces are matched by `piece_id`. One that only exists in `next` has just
- * appeared (a split), so it pops in at its true position rather than sliding in
- * from nowhere. One that only exists in `previous` is gone (eaten or merged)
+ * Pieces are matched by `piece_id`. 
+ * 
+ * One that only exists in `next` has just appeared (a split), so it pops in at its true position rather than sliding in
+ * from nowhere. 
+ * 
+ * One that only exists in `previous` is gone (eaten or merged)
  * and is dropped immediately.
  *
  * The result therefore carries `next`'s set of pieces with blended positions.
@@ -141,13 +171,12 @@ export function interpolateStates(previous, next, alpha) {
   }
 
   const players = next.players.map((player) => ({
-    id: player.id,
-    name: player.name,
+    ...player,
     pieces: player.pieces.map((piece) => {
       const old = before.get(piece.piece_id);
       if (!old) return piece;
       return {
-        piece_id: piece.piece_id,
+        ...piece,
         x: old.x + (piece.x - old.x) * alpha,
         y: old.y + (piece.y - old.y) * alpha,
         mass: old.mass + (piece.mass - old.mass) * alpha,
@@ -155,7 +184,7 @@ export function interpolateStates(previous, next, alpha) {
     }),
   }));
 
-  return { type: "state", players, food: next.food };
+  return { ...next, players };
 }
 
 // --- drawing --------------------------------------------------------------
@@ -244,7 +273,7 @@ function drawPieces(ctx, state, camera, viewport, labels) {
   for (const { player, piece } of drawOrder) {
     const point = worldToScreen(camera, viewport, piece.x, piece.y);
     const radius = radiusForMass(piece.mass) * camera.scale;
-    const color = colorForId(player.id);
+    const color = colorsFromHex(player.color) || colorForId(player.id);
 
     ctx.beginPath();
     ctx.arc(point.x, point.y, Math.max(radius, 2), 0, Math.PI * 2);
@@ -361,6 +390,20 @@ export function drawInputRays(ctx, state, camera, viewport, inputs) {
     ctx.stroke();
   }
   ctx.restore();
+}
+
+function rgbToHsl(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l: l * 100 };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return { h: h * 60, s: s * 100, l: l * 100 };
 }
 
 function clamp(value, low, high) {
