@@ -314,9 +314,12 @@ function cycleFollow(snapshot) {
     followId = null;
     return;
   }
-  const ids = living.map((player) => player.id);
-  const index = ids.indexOf(followId);
-  followId = ids[(index + 1) % ids.length];
+  // Living players plus a trailing null slot for the map-fit camera — the
+  // same framing Spectate starts on. A vanished follow id is not in the
+  // ring, so indexOf is -1 and the next slot is the first living player.
+  const ring = [...living.map((player) => player.id), null];
+  const index = ring.indexOf(followId);
+  followId = ring[(index + 1) % ring.length];
   snapCamera = true;
 }
 
