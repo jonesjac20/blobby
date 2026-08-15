@@ -1,8 +1,10 @@
 /**
- * Phase 3 game client. Drives render.js from a /ws connection.
+ * Live game client. Drives render.js from a /ws connection.
  *
  * Connects on load and does not send join until Play. Food is held separately
- * and spliced onto a copy of the interpolated snapshot at draw time.
+ * and spliced onto a copy of the interpolated snapshot at draw time. Spacebar
+ * sends split while playing; held-key auto-repeat is ignored. Wheel zooms the
+ * follow-cam while playing or spectating.
  */
 
 import {
@@ -13,32 +15,38 @@ import {
   interpolateStates,
   playerCentroid,
   playerMass,
+  playerRemergeIn,
   radiusForMass,
   resizeCanvas,
   screenToWorld,
   worldToScreen,
 } from "./render.js";
 
-const TICK_SECONDS = 1 / 30;
 const INPUT_INTERVAL_MS = 1000 / 20;
 const FOLLOW_SMOOTHING = 6;
 const DEADZONE_PX = 8;
 const MAX_DT = 0.1;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2.5;
+const ZOOM_SENSITIVITY = 0.0015;
 // Doubling from half a second to eight, so a server that comes straight back up
 // is caught almost immediately while a tab left open overnight is not hammering
 // a machine that is off.
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 8000;
-// Mirrors WORLD_WIDTH / WORLD_HEIGHT in server/config.py. Nothing on the wire
-// carries the arena size, so changing it there means changing it here: the
-// simulation would clamp to the new bounds while the client kept drawing the
-// old rectangle.
-const WORLD = { width: 1200, height: 1200 };
-const WORLD_RECT = [0, 0, WORLD.width, WORLD.height];
+// Filled from `welcome` / `state`. These are not client constants —
+// changing them in config.py used to leave this drawing a 1200 square around
+// a correctly-clamped world, interpolating at 30Hz, and zooming as if spawn
+// mass were still 40.
+const world = { width: 0, height: 0 };
+let tickSeconds = 1 / 30;
+let initialPlayerMass = 50;
 
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
 const massEl = document.getElementById("mass");
+const remergeEl = document.getElementById("remerge");
+const remergeTimeEl = document.getElementById("remerge-time");
 const protectedEl = document.getElementById("protected");
 const menu = document.getElementById("menu");
 const gameOver = document.getElementById("game-over");
@@ -85,6 +93,7 @@ let lastInputAt = 0;
 let lastTimestamp = 0;
 
 const camera = createCamera();
+let zoomFactor = 1;
 /** @type {{ snapshot: object, viewport: { width: number, height: number } } | null} */
 let lastDraw = null;
 
@@ -100,6 +109,32 @@ function socketIsOpen() {
 function sendJson(payload) {
   if (!socketIsOpen()) return;
   socket.send(JSON.stringify(payload));
+}
+
+function applyWorld(msg) {
+  const rect = msg.world;
+  if (!rect || typeof rect !== "object") return;
+  const { width, height } = rect;
+  if (typeof width !== "number" || typeof height !== "number") return;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  if (width <= 0 || height <= 0) return;
+  world.width = width;
+  world.height = height;
+}
+
+function applyConfig(msg) {
+  applyWorld(msg);
+  const { tickRate, initialPlayerMass: spawnMass } = msg;
+  if (typeof tickRate === "number" && Number.isFinite(tickRate) && tickRate > 0) {
+    tickSeconds = 1 / tickRate;
+  }
+  if (typeof spawnMass === "number" && Number.isFinite(spawnMass) && spawnMass > 0) {
+    initialPlayerMass = spawnMass;
+  }
+}
+
+function worldRect() {
+  return [0, 0, world.width, world.height];
 }
 
 function syncJoinButtons() {
@@ -186,6 +221,7 @@ function onMessage(event) {
 
   switch (msg.type) {
     case "welcome":
+      applyConfig(msg);
       selfId = msg.id;
       followId = null;
       snapCamera = true;
@@ -194,6 +230,7 @@ function onMessage(event) {
       latestFood = (msg.food || []).map(([x, y]) => ({ x, y }));
       break;
     case "state":
+      applyConfig(msg);
       previousState = nextState;
       nextState = msg;
       nextArrivedAt = performance.now();
@@ -237,6 +274,7 @@ function sendJoin() {
 function enterPlaying() {
   mode = "playing";
   followId = null;
+  zoomFactor = 1;
   menu.hidden = true;
   gameOver.hidden = true;
   hud.hidden = true;
@@ -259,6 +297,7 @@ function enterSpectate() {
   mode = "spectating";
   selfId = null;
   followId = null;
+  zoomFactor = 1;
   hud.hidden = true;
   menu.hidden = true;
   gameOver.hidden = true;
@@ -275,9 +314,12 @@ function cycleFollow(snapshot) {
     followId = null;
     return;
   }
-  const ids = living.map((player) => player.id);
-  const index = ids.indexOf(followId);
-  followId = ids[(index + 1) % ids.length];
+  // Living players plus a trailing null slot for the map-fit camera — the
+  // same framing Spectate starts on. A vanished follow id is not in the
+  // ring, so indexOf is -1 and the next slot is the first living player.
+  const ring = [...living.map((player) => player.id), null];
+  const index = ring.indexOf(followId);
+  followId = ring[(index + 1) % ring.length];
   snapCamera = true;
 }
 
@@ -342,7 +384,7 @@ function tick(timestamp) {
   }
 
   const elapsed = (timestamp - nextArrivedAt) / 1000;
-  const alpha = Math.min(Math.max(elapsed / TICK_SECONDS, 0), 1);
+  const alpha = Math.min(Math.max(elapsed / tickSeconds, 0), 1);
   const interpolated = interpolateStates(previousState, nextState, alpha);
   const snapshot = { ...interpolated, food: latestFood };
 
@@ -357,23 +399,26 @@ function tick(timestamp) {
 
   if (canFollow) {
     const options = snapCamera
-      ? { smoothing: 0, dt: 0 }
-      : { smoothing: FOLLOW_SMOOTHING, dt };
+      ? { smoothing: 0, dt: 0, referenceMass: initialPlayerMass, zoomFactor }
+      : { smoothing: FOLLOW_SMOOTHING, dt, referenceMass: initialPlayerMass, zoomFactor };
     followCamera(camera, snapshot, followId, viewport, options);
     snapCamera = false;
   } else {
-    fitCamera(camera, WORLD_RECT, viewport);
+    fitCamera(camera, worldRect(), viewport);
   }
 
   if (mode === "playing" && followed && followId === selfId) {
     hud.hidden = false;
     massEl.textContent = String(Math.round(playerMass(followed)));
+    const wait = playerRemergeIn(followed);
+    remergeEl.hidden = wait < 0.05;
+    if (wait >= 0.05) remergeTimeEl.textContent = wait.toFixed(1);
     protectedEl.hidden = !followed.protected;
   } else if (mode === "playing") {
     hud.hidden = true;
   }
 
-  drawWorld(ctx, snapshot, camera, viewport, { world: WORLD });
+  drawWorld(ctx, snapshot, camera, viewport, { world });
   lastDraw = { snapshot, viewport };
   maybeSendInput(snapshot, viewport, timestamp);
 }
@@ -403,6 +448,18 @@ canvas.addEventListener("pointermove", (event) => {
   pointer = pointerOnCanvas(event);
 });
 
+window.addEventListener(
+  "wheel",
+  (event) => {
+    if (mode !== "playing" && mode !== "spectating") return;
+    event.preventDefault();
+    const pixels = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+    zoomFactor *= Math.exp(-pixels * ZOOM_SENSITIVITY);
+    zoomFactor = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoomFactor));
+  },
+  { passive: false }
+);
+
 canvas.addEventListener("click", (event) => {
   if (mode !== "spectating" || !lastDraw) return;
   const point = pointerOnCanvas(event);
@@ -416,10 +473,19 @@ canvas.addEventListener("click", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-  if (mode !== "spectating") return;
+  if (event.key === "Escape") {
+    if (mode !== "spectating") return;
+    event.preventDefault();
+    showMenu();
+    return;
+  }
+  if (event.code !== "Space") return;
+  if (mode !== "playing") return;
+  // OS auto-repeat would dump 1 → 2 → 4 → 8 in a few hundred milliseconds.
+  // One physical press is one split; mash Space to go further.
+  if (event.repeat) return;
   event.preventDefault();
-  showMenu();
+  sendJson({ type: "split" });
 });
 
 syncJoinButtons();

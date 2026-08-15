@@ -15,7 +15,7 @@ import socketserver
 import webbrowser
 from pathlib import Path
 
-from server.config import TICK_RATE, WORLD_HEIGHT, WORLD_WIDTH
+from server.config import INITIAL_PLAYER_MASS, TICK_RATE, WORLD_HEIGHT, WORLD_WIDTH
 from tools.scenarios import SCENARIOS, Scenario
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +34,7 @@ def record(scenario: Scenario) -> dict:
         "speed": scenario.speed,
         "world": {"width": WORLD_WIDTH, "height": WORLD_HEIGHT},
         "tickRate": TICK_RATE,
+        "initialPlayerMass": INITIAL_PLAYER_MASS,
         "frames": recorder.frames,
     }
 

@@ -24,6 +24,7 @@ from server.config import (
     MAX_PIECES,
     MERGE_OVERLAP,
     MERGE_PULL_SPEED,
+    MERGE_RECALL,
     MIN_SPLIT_MASS,
     OWN_PIECE_OVERLAP,
     REMERGE_SECONDS,
@@ -114,6 +115,16 @@ def _merge_ready(world: World, piece: Piece) -> bool:
     return world.now - piece.split_time >= REMERGE_SECONDS
 
 
+def remerge_in(world: World, piece: Piece) -> float:
+    """Seconds until this piece's remerge timer clears. Zero if it already has.
+
+    Derived from `World.now` the same way `is_spawn_protected` is: the remaining
+    duration rides the wire, not the timestamp, so a client cannot hurry it.
+    """
+    remaining = REMERGE_SECONDS - (world.now - piece.split_time)
+    return remaining if remaining > 0.0 else 0.0
+
+
 def is_spawn_protected(world: World, player: Player) -> bool:
     """Whether this player is still inside the spawn invulnerability window.
 
@@ -162,11 +173,29 @@ def step(world: World, dt: float) -> None:
     _refill_food(world)
 
 
+def _cluster_centroid(pieces: list[Piece]) -> tuple[float, float]:
+    """Mass-weighted centre of `pieces`. The heavy body barely leaves this point."""
+    total = sum(piece.mass for piece in pieces)
+    if total <= 0.0:
+        return pieces[0].x, pieces[0].y
+    return (
+        sum(piece.x * piece.mass for piece in pieces) / total,
+        sum(piece.y * piece.mass for piece in pieces) / total,
+    )
+
+
 def _apply_input_and_move(world: World, previous_now: float, dt: float) -> None:
     for player in world.players.values():
         input_x, input_y = _normalized(*player.last_input)
+        # Merge-ready pieces steer at the whole body's pace so a light leftover
+        # cannot outrun the core it is supposed to sink into.
+        cluster_speed = speed_for_mass(sum(piece.mass for piece in player.pieces))
         for piece in player.pieces:
-            speed = speed_for_mass(piece.mass)
+            speed = (
+                cluster_speed
+                if _merge_ready(world, piece)
+                else speed_for_mass(piece.mass)
+            )
             kick_seconds = _kick_integral(
                 previous_now - piece.split_time, world.now - piece.split_time
             )
@@ -176,7 +205,7 @@ def _apply_input_and_move(world: World, previous_now: float, dt: float) -> None:
 
 
 def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
-    """Draw each player's own pieces together: cohesion, then the merge pull.
+    """Draw each player's own pieces together: cohesion, then the merge recall.
 
     Deliberately position-level and never written to `vx/vy`, so those fields
     keep meaning exactly "split kick" for the wire format and the debug arrows.
@@ -185,6 +214,10 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
     That is what pins a settled pair to exactly OWN_PIECE_OVERLAP at any tick
     rate: cohesion may overshoot, and the projection corrects it the same way
     every time.
+
+    Once a piece's remerge timer clears it homes on the cluster centroid at
+    MERGE_PULL_SPEED + MERGE_RECALL * distance, so a fragment that drifted off
+    still returns, and the heavy core (sitting on the centroid) barely moves.
     """
     for player in world.players.values():
         pieces = player.pieces
@@ -201,15 +234,12 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
             for j in range(i + 1, len(pieces)):
                 b = pieces[j]
                 if a_ready and _merge_ready(world, b):
-                    speed = MERGE_PULL_SPEED
-                    # All the way in; the remerge fires at MERGE_OVERLAP long
-                    # before the two centers actually meet.
-                    target = 0.0
-                elif a_kicking or _kick_active_during_tick(previous_now, b):
+                    # Centroid homing below. Pairwise pull would fight it.
                     continue
-                else:
-                    speed = COHESION_SPEED
-                    target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
+                if a_kicking or _kick_active_during_tick(previous_now, b):
+                    continue
+                speed = COHESION_SPEED
+                target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
 
                 dx, dy = b.x - a.x, b.y - a.y
                 distance = math.hypot(dx, dy)
@@ -239,6 +269,20 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
                 dx, dy = dx * cap / length, dy * cap / length
             piece.x += dx
             piece.y += dy
+
+        ready = [piece for piece in pieces if _merge_ready(world, piece)]
+        if not ready:
+            continue
+        cx, cy = _cluster_centroid(pieces)
+        for piece in ready:
+            dx, dy = cx - piece.x, cy - piece.y
+            distance = math.hypot(dx, dy)
+            if distance == 0.0:
+                continue
+            speed = MERGE_PULL_SPEED + MERGE_RECALL * distance
+            move = min(speed * dt, distance)
+            piece.x += dx / distance * move
+            piece.y += dy / distance * move
 
 
 def _resolve_collisions(world: World) -> None:

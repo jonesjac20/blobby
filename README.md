@@ -15,7 +15,7 @@ python -m server.demo            # Phase 1 console harness: two hardcoded player
 python -m tools.record --serve   # record every verification scenario and open the browser viewer
 ```
 
-`BLOBBY_HOST` and `BLOBBY_PORT` override the bind address (default `0.0.0.0:8000`). `BLOBBY_DEBUG_SPAWN=x,y` pins every live join to that point so two tabs can reproduce spawn overlap; it is local feel-testing only, not a protocol field. A spectator probe uses `--spectate` and never sends `join`.
+`BLOBBY_HOST` and `BLOBBY_PORT` override the bind address (default `0.0.0.0:8000`). `BLOBBY_DEBUG_SPAWN=x,y` pins every live join to that point so two tabs can reproduce spawn overlap; `BLOBBY_DEBUG_MASS=280` pins spawn mass so a life can split through the 8-piece cap without eating. Both are local feel-testing only, not protocol fields. A spectator probe uses `--spectate` and never sends `join`.
 
 Runtime-only install (no pytest):
 

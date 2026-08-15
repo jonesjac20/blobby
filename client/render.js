@@ -5,7 +5,7 @@
  * 4 of the build plan:
  *
  *   { type: "state",
- *     players: [{ id, name, color, protected, pieces: [{ piece_id, x, y, mass }] }],
+ *     players: [{ id, name, color, protected, pieces: [{ piece_id, x, y, mass, remerge_in }] }],
  *     food:    [{ id, x, y }] }
  *
  * Nothing in this file knows where that state came from. The Phase 1 viewer
@@ -21,6 +21,17 @@ export function radiusForMass(mass) {
 
 export function playerMass(player) {
   return player.pieces.reduce((total, piece) => total + piece.mass, 0);
+}
+
+/** Longest remaining remerge wait in the cluster. Zero if there is nothing to merge. */
+export function playerRemergeIn(player) {
+  if (!player.pieces || player.pieces.length < 2) return 0;
+  let wait = 0;
+  for (const piece of player.pieces) {
+    const remaining = piece.remerge_in;
+    if (typeof remaining === "number" && remaining > wait) wait = remaining;
+  }
+  return wait;
 }
 
 export function playerCentroid(player) {
@@ -95,15 +106,19 @@ export function fitCamera(camera, rect, viewport, padding = 1.06) {
 /**
  * Phase 3 camera: centre on one player's centroid and zoom out as it grows.
  * `smoothing` is the fraction of the gap closed per second (0 snaps instantly).
+ * `zoomFactor` is a multiplier on that mass-based scale (wheel zoom; 1 is default).
  */
 export function followCamera(camera, state, playerId, viewport, options = {}) {
   const {
     baseSpan = 420,
-    referenceMass = 40,
+    // Mirrors INITIAL_PLAYER_MASS in server/config.py. The live client passes
+    // the value from welcome/state; this default is for the viewer.
+    referenceMass = 50,
     smoothing = 0,
     dt = 0,
     minScale = 0.05,
     maxScale = 12,
+    zoomFactor = 1,
   } = options;
 
   const player = state.players.find((candidate) => candidate.id === playerId);
@@ -112,10 +127,11 @@ export function followCamera(camera, state, playerId, viewport, options = {}) {
 
   const mass = Math.max(playerMass(player), referenceMass);
   const span = baseSpan * Math.sqrt(mass / referenceMass);
+  const massScale = clamp(Math.min(viewport.width, viewport.height) / span, minScale, maxScale);
   const target = {
     x: centroid.x,
     y: centroid.y,
-    scale: clamp(Math.min(viewport.width, viewport.height) / span, minScale, maxScale),
+    scale: clamp(massScale * zoomFactor, minScale, maxScale),
   };
 
   if (smoothing <= 0 || dt <= 0) {
@@ -179,6 +195,7 @@ export function interpolateStates(previous, next, alpha) {
         x: old.x + (piece.x - old.x) * alpha,
         y: old.y + (piece.y - old.y) * alpha,
         mass: old.mass + (piece.mass - old.mass) * alpha,
+        remerge_in: blendOptional(old.remerge_in, piece.remerge_in, alpha),
       };
     }),
   }));
@@ -259,12 +276,18 @@ function drawFood(ctx, state, camera, viewport) {
 }
 
 // A name is never allowed to shrink out of existence, so its size is clamped
-// rather than derived from the radius alone. Mass keeps the old behaviour of
-// vanishing on a small disc: it lives inside the body, where there is no room.
+// rather than derived from the radius alone. Mass is the same: spawn-size discs
+// are ~10px at follow-cam zoom, and a number that vanishes there cannot tell
+// you whether the blob in front of you is food or a predator.
 const NAME_MIN_PX = 11;
 const NAME_MAX_PX = 16;
-const MASS_LABEL_MIN_RADIUS_PX = 13;
+const MASS_MIN_PX = 10;
+const MASS_MAX_PX = 14;
+const TIMER_MIN_PX = 9;
+const TIMER_MAX_PX = 12;
 const LABEL_OUTLINE = "rgba(4, 7, 14, 0.85)";
+const TIMER_FILL = "#ffd166";
+const REMERGE_VISIBLE = 0.05;
 
 function drawPieces(ctx, state, camera, viewport, labels) {
   // Smallest last, so a big blob never completely hides a small one.
@@ -315,33 +338,71 @@ function drawPieces(ctx, state, camera, viewport, labels) {
 
   if (!labels) return;
 
-  // Names ride *above* the disc rather than inside it, and are drawn in a
-  // second pass over the same order. Both are needed for a name to be readable
-  // at all times: inside the body it disappears on anything as small as a
-  // freshly spawned player, and in the first pass a smaller blob painted later
-  // covers the name of the bigger one it is sitting on.
   ctx.save();
   ctx.lineJoin = "round";
   ctx.miterLimit = 2;
+
+  // Eat is per-piece, so a split fragment needs its own number — that is what
+  // tells you whether you can take it. A one-piece player is labelled only
+  // above: the blob total *is* that piece, and stacking both would print the
+  // same figure twice. Floored and outlined like names, so a small disc still
+  // reads instead of going blank.
+  ctx.strokeStyle = LABEL_OUTLINE;
   for (const { player, piece, color } of drawOrder) {
+    if (player.pieces.length < 2) continue;
     const point = worldToScreen(camera, viewport, piece.x, piece.y);
     const radius = radiusForMass(piece.mass) * camera.scale;
-    const size = clamp(radius * 0.4, NAME_MIN_PX, NAME_MAX_PX);
+    const size = clamp(radius * 0.34, MASS_MIN_PX, MASS_MAX_PX);
+    outlinedText(ctx, String(Math.round(piece.mass)), point.x, point.y, size, color.text);
+  }
 
-    ctx.font = `600 ${size}px ui-monospace, monospace`;
-    ctx.lineWidth = Math.max(2, size * 0.22);
-    ctx.strokeStyle = LABEL_OUTLINE;
-    ctx.fillStyle = color.text;
-    // Outlined because the name now sits on the backdrop, the grid, or whatever
-    // blob happens to be behind it, none of which it was contrasted against
-    // while it lived inside its own body.
-    const nameY = point.y - Math.max(radius, 2) - size * 0.65;
-    ctx.strokeText(player.name, point.x, nameY);
-    ctx.fillText(player.name, point.x, nameY);
+  // One name, sitting above the cluster at the centroid's x, with total mass
+  // stacked under it and the remerge countdown under that while the cluster
+  // is still waiting. A one-piece player keeps a single identity+danger pair
+  // above the disc; a split player is not labelled eight times. Sized from
+  // total mass so splitting does not shrink the identity. Outlined because it
+  // now sits on the backdrop, the grid, or whatever blob happens to be behind
+  // it. Larger players first so a smaller name still wins when two labels
+  // overlap.
+  const named = [];
+  for (const player of state.players) {
+    if (!player.pieces.length) continue;
+    const centroid = playerCentroid(player);
+    if (!centroid) continue;
+    let clusterTop = Infinity;
+    for (const piece of player.pieces) {
+      const point = worldToScreen(camera, viewport, piece.x, piece.y);
+      const radius = radiusForMass(piece.mass) * camera.scale;
+      clusterTop = Math.min(clusterTop, point.y - Math.max(radius, 2));
+    }
+    named.push({
+      player,
+      color: colorsFromHex(player.color) || colorForId(player.id),
+      centroid,
+      clusterTop,
+      mass: playerMass(player),
+      remergeIn: playerRemergeIn(player),
+    });
+  }
+  named.sort((a, b) => b.mass - a.mass);
 
-    if (radius < MASS_LABEL_MIN_RADIUS_PX) continue;
-    ctx.font = `${Math.min(13, Math.max(8, radius * 0.34))}px ui-monospace, monospace`;
-    ctx.fillText(piece.mass.toFixed(0), point.x, point.y);
+  for (const { player, color, centroid, clusterTop, mass, remergeIn } of named) {
+    const origin = worldToScreen(camera, viewport, centroid.x, centroid.y);
+    const size = clamp(radiusForMass(mass) * camera.scale * 0.4, NAME_MIN_PX, NAME_MAX_PX);
+    const massSize = clamp(size * 0.85, MASS_MIN_PX, MASS_MAX_PX);
+    const showTimer = remergeIn >= REMERGE_VISIBLE;
+    const timerSize = showTimer ? clamp(massSize * 0.9, TIMER_MIN_PX, TIMER_MAX_PX) : 0;
+
+    let y = clusterTop;
+    if (showTimer) {
+      y -= timerSize * 0.65;
+      outlinedText(ctx, `${remergeIn.toFixed(1)}s`, origin.x, y, timerSize, TIMER_FILL);
+      y -= timerSize * 0.45;
+    }
+    y -= massSize * 0.65;
+    outlinedText(ctx, String(Math.round(mass)), origin.x, y, massSize, color.text);
+    y -= (size + massSize) * 0.55;
+    outlinedText(ctx, player.name, origin.x, y, size, color.text, "600 ");
   }
   ctx.restore();
 }
@@ -462,4 +523,17 @@ function rgbToHsl(r, g, b) {
 
 function clamp(value, low, high) {
   return Math.min(Math.max(value, low), high);
+}
+
+function blendOptional(previous, next, alpha) {
+  if (typeof previous !== "number" || typeof next !== "number") return next;
+  return previous + (next - previous) * alpha;
+}
+
+function outlinedText(ctx, text, x, y, size, fill, weight = "") {
+  ctx.font = `${weight}${size}px ui-monospace, monospace`;
+  ctx.lineWidth = Math.max(2, size * 0.22);
+  ctx.fillStyle = fill;
+  ctx.strokeText(text, x, y);
+  ctx.fillText(text, x, y);
 }
