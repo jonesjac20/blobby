@@ -1,9 +1,10 @@
 /*
  * Shared client styling.
  *
- * The tokens and the `canvas-wrap` / full-bleed canvas rules are reused by the
- * Phase 3 game client; everything under "Phase 1 viewer" is scaffolding for the
- * verification tool and can be dropped once the real client exists.
+ * The tokens and the `canvas-wrap` / full-bleed canvas rules are shared by both
+ * pages. Everything under "Phase 1 viewer" styles the verification viewer,
+ * which Phase 3 decided to keep as a regression harness — so it stays, even
+ * though the real client no longer needs it.
  */
 
 :root {
@@ -411,4 +412,125 @@ canvas {
 .empty {
   color: #5b657f;
   font-size: 12px;
+}
+
+/* --- Phase 3 game ------------------------------------------------------- */
+
+body.game .canvas-wrap {
+  position: fixed;
+  inset: 0;
+  flex: none;
+  z-index: 0;
+}
+
+body.game .hud {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  z-index: 1;
+  color: var(--text);
+  font: 20px/1.2 var(--mono);
+  pointer-events: none;
+}
+
+body.game .overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(11, 14, 22, 0.72);
+}
+
+body.game .overlay[hidden] {
+  display: none;
+}
+
+/* Above the menu and Game Over both: a lost socket makes either of them a lie,
+ * since neither Play nor Respawn can reach the server. */
+body.game #offline {
+  z-index: 3;
+  background: rgba(11, 14, 22, 0.88);
+}
+
+body.game .overlay .panel {
+  min-width: 280px;
+  max-width: 360px;
+  padding: 28px 32px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+body.game .overlay h1 {
+  margin: 0 0 16px;
+  font-size: 28px;
+}
+
+body.game .overlay p {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+body.game .overlay label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+body.game .overlay input[type="text"] {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 14px var(--mono);
+}
+
+body.game .overlay input[type="color"] {
+  width: 100%;
+  height: 36px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+body.game .overlay .actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+body.game .overlay button {
+  flex: 1;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+body.game .overlay button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+body.game .overlay #play,
+body.game .overlay #respawn,
+body.game .overlay #retry {
+  border-color: transparent;
+  background: var(--accent);
+  color: #06182e;
+  font-weight: 700;
+}
+
+body.game .overlay button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }

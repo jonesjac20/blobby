@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>blobby</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="game">
+    <div class="canvas-wrap">
+      <canvas id="game-canvas"></canvas>
+      <div id="hud" class="hud" hidden>
+        <span id="mass" class="mass">0</span>
+      </div>
+    </div>
+
+    <div id="menu" class="overlay">
+      <form id="join-form" class="panel" action="#" method="get">
+        <h1>blobby</h1>
+        <label>
+          name
+          <input
+            id="name"
+            name="name"
+            type="text"
+            maxlength="16"
+            autocomplete="nickname"
+            placeholder="blob"
+          />
+        </label>
+        <label>
+          color
+          <input id="color" name="color" type="color" value="#4fc3f7" />
+        </label>
+        <div class="actions">
+          <button id="play" type="button">Play</button>
+          <button id="spectate" type="button">Spectate</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="offline" class="overlay" hidden>
+      <div class="panel">
+        <h1 id="offline-title">Connecting</h1>
+        <p id="offline-status">Reaching the server…</p>
+        <div class="actions">
+          <button id="retry" type="button">Retry now</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="game-over" class="overlay" hidden>
+      <div class="panel">
+        <h1>Game Over!</h1>
+        <p>peak mass <span id="peak-mass">0</span></p>
+        <p>survived <span id="survival">0</span>s</p>
+        <div class="actions">
+          <button id="customize" type="button">Customize</button>
+          <button id="respawn" type="button">Respawn</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="game.js"></script>
+  </body>
+</html>

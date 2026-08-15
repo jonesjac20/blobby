@@ -5,6 +5,7 @@ These names are bound by value at import into `server.world` and
 effect; patch `server.world.FOOD_COUNT`, or pass `World(food_target=...)`.
 """
 
+import os
 import time
 
 TICK_RATE = 30
@@ -33,6 +34,15 @@ SIMULATION_CLOCK_SOURCE = time.monotonic
 # safe direction.
 MAX_TICK_SECONDS = 0.25
 
+# Bind address for the aiohttp process. 0.0.0.0, not 127.0.0.1: binding
+# localhost would make Phase 7's external test fail in a way
+# indistinguishable from a bad port forward.
+HOST = os.environ.get("BLOBBY_HOST", "0.0.0.0")
+PORT = int(os.environ.get("BLOBBY_PORT", "8000"))
+
+NAME_MAX_LEN = 16
+DEFAULT_COLOR = "#4fc3f7"
+
 WORLD_WIDTH = 1200
 WORLD_HEIGHT = 1200
 
@@ -41,6 +51,13 @@ FOOD_MASS = 1
 
 # Above MIN_SPLIT_MASS so a freshly spawned player can split without eating first.
 INITIAL_PLAYER_MASS = 40
+
+# How long a freshly joined player cannot be eaten. Spawn points come from the
+# world RNG and are only clamped into the rectangle, never away from other
+# bodies, so a join can land inside a blob big enough to eat it on the next
+# tick. This is the window to eat some food or run. A feel parameter like the
+# cluster values - judge it on a screen in Phase 3, not here.
+SPAWN_INVULN_SECONDS = 3.0
 
 # World units per second for a piece at INITIAL_PLAYER_MASS. Lighter pieces
 # move faster (`speed_for_mass`), so a split fragment can travel more than

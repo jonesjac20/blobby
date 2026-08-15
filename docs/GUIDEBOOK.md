@@ -26,6 +26,21 @@ The source plan is the authority on scope. Where this build adds to it, it is re
 - **A simulation clock.** The source plan never says where "now" comes from. See [Simulation clock](#simulation-clock).
 - **Verification tooling.** `tests/`, `tools/` and the browser viewer are not in the source plan. See [Verification tooling](#verification-tooling-phase-1).
 - **Phase 3 render core built early.** `client/render.js` and `client/style.css` were written during Phase 1 so the viewer had something to draw with. That breaks the "each phase before the next" rule; it is recorded here so the rule's failure is visible rather than assumed.
+- **Greeting menu, color, and death.** Source section 4 has `join` / `input` / `split` and a `state` broadcast of `{id, name, pieces}`. Connecting here does not spawn. `join` carries a player-chosen `color`; the server replies with `welcome` `{id}` so a client can follow-cam without matching on name. A last-piece eat removes the player from the world and sends `game_over` `{peak_mass, survival_seconds}` on that socket only. The next `join` on the same socket is a respawn. Spectating is connecting and never sending `join`. Phase 3 owns the menu and Game Over UI; Phase 2 owns the protocol so that UI can exist. `state` players also carry `color`.
+- **Phase 1 console harness lives in `server/demo.py`.** Phase 2 rewrote `server/main.py` as the aiohttp entrypoint. `python -m server.demo` is the old two-player printout.
+- **Runtime vs dev requirements.** `requirements.txt` is pinned `aiohttp` only, so Phase 7's VM bootstrap does not install pytest. Tests install from `requirements-dev.txt`.
+- **Spawn invulnerability.** `SPAWN_INVULN_SECONDS = 3` — not in the source plan, and a consequence of `join` picking a spawn point from the RNG. That point is clamped into the rectangle, never away from other bodies, so a join can land inside a blob heavy enough to eat it on the next tick and a player would be dead before the first frame renders. For that window the player cannot be eaten but eats normally, and a predator on top of it is shoved rather than left to interpenetrate. **Granted by a live `join` only** — `world.spawn_player` leaves `Player.spawn_time` already expired, so every Phase 1 test, scenario and the demo harness stage edible players exactly as before. Another feel parameter: 3s is a pick from the 2–5s range, to be judged on a screen in Phase 3.
+- **The broadcast is guarded against a join landing mid-tick.** `_emit` awaits each socket in turn, so a `join` handled during that loop splits the broadcast into sockets served before it and sockets served after. Three messages go wrong in that window, and each is dropped rather than sent: a `game_over` from the previous life, which would arrive after the respawn's `welcome` and end a game that just started; a `state` naming the new player *before* its `welcome`, which hands the client an id it does not yet know is its own; and the pre-join snapshot *after* `welcome`, which omits the player entirely so Phase 3's follow-cam finds nothing to follow. A playing socket simply misses that one frame — the next tick's snapshot is correct for it. Spectators are never withheld anything.
+- **`peak_mass` is observed mid-tick.** `update_and_eliminate` runs after `simulation.step`, by which point a player killed this tick has no pieces left to measure. `simulation` records `Player.last_total_mass` just before eaten pieces are culled, so mass picked up on the tick that killed you — a pellet, or a fragment of the blob that then ate you — still reaches Game Over.
+- **A failed tick is logged, not fatal.** The tick loop catches exceptions from `process_tick` and from the broadcast and continues. Without it, one throw cancels the task and leaves the HTTP and WebSocket endpoints answering normally over a world that has silently stopped, which reads as a network fault. A throw partway through `step` can leave the world half-mutated; for a POC a visible traceback and a resumed loop beats a frozen one.
+- **An explicit `/` route, and a file whitelist.** `add_static("/", CLIENT_DIR)` maps paths to files and refuses a directory-root request, so `/` returned 403, `/index.html` 404 (no such file yet), and `/viewer.html` plus `/recordings/index.json` 200. Phase 3 serves `index.html` at `/` and only `index.html`, `game.js`, `render.js` and `style.css` under `/{name}`. The Phase 1 viewer stays a regression harness, reachable via `python -m tools.record --serve` on 8080, and is not on the game port — the same decision Phase 7 requires once this process faces the internet.
+- **Food leaves the `state` broadcast.** Source plan section 4 puts a full food list in every `state`. Measured on a six-player world that was 55,503 of 57,126 bytes (97%), resent ~90% of ticks with a byte-identical 600-element array (median pellet-set churn was 0). A `food` message of `[[x, y], ...]` integer pairs is sent only when the id set changes, or to a socket whose `food_version` is behind. The version is recorded only after a successful send, so a raise that `_emit` swallows retries next tick, and because food is no longer in `state`, withholding a join-window frame cannot desync a client's pellets. Area-of-interest culling and protobuf stay deferred; a true per-pellet delta is a drop-in on the same message type.
+- **Food that spawns on a blob is eaten the same tick.** Spawn runs after the swept eat, so a pellet can appear inside a disc that did not move onto it. Left for the next tick it would render inside a body for a frame. `_refill_food` eats those at rest and respawns until the surviving pellets are uncovered.
+- **The client mirrors the world size rather than being told it.** Nothing on the wire carries the arena rectangle, so `WORLD` in `game.js` duplicates `WORLD_WIDTH` / `WORLD_HEIGHT` from `server/config.py`. Change one and the simulation clamps to the new bounds while the client keeps drawing the old border and grid — bodies would sit outside the rectangle they are supposedly inside, which reads as a physics bug rather than a constant. Both sides are commented to say so. Putting the rectangle in `welcome` is the real fix and is cheap; it is deferred only because no phase before 7 changes the value.
+- **No JavaScript is under test.** Every other `[Agent]` box in this doc names a test that proves it. `client/game.js` is 350 lines of protocol handling — mode transitions, the follow-cam handoff after `welcome`, the food splice, input throttling — and none of it is proved by anything but the Phase 3 and 4 human checklists. Two source-grep tests were briefly added and removed: asserting that `"WebSocket"` and `"0.75"` appear in the served files proved nothing about behaviour while breaking on any rewording. The gap is real and tracked in [`feel-pass.md`](feel-pass.md) D, not papered over here.
+- **A dropped socket reconnects, but the life it was holding does not.** Not in the source plan, which never mentions the connection closing. `game.js` retries with a doubling backoff from 0.5s to 8s behind a "Connection lost" overlay with a Retry button, because without it a closed socket left the last snapshot on screen forever, frozen and captioned with a live-looking mass — and during Phase 4, with the server being restarted constantly, that is indistinguishable from the desync the exit criterion asks about. On reconnect the client drops to the greeting menu rather than rejoining: `websocket_handler` removed the player when the socket closed, so there is no life left to resume, and rejoining silently would read as a teleport back to spawn mass. A spectator lost nothing and carries on. Buffered snapshots are discarded on open, or interpolation would slide every blob across the gap.
+- **Names are unique among live players; colors are not.** Source section 4 puts `name` on the wire and says nothing about collisions. Two blobs both labelled "jack" makes the labels useless for the one thing they exist to do, so `protocol.unique_name` appends ` (2)`, ` (3)`… to a name a live player already holds, compared case-insensitively — "Jack" and "jack" are the same name to anyone reading them. The chosen casing survives; the base is truncated so the result still fits `NAME_MAX_LEN`. Colors are deliberately left to collide: a hex picker cannot promise uniqueness without overriding the player's choice, and the name already tells the two apart. Suffixing rather than rejecting, because a rejection needs a new wire message and an error state in the menu, and it can fail a *respawn* — Game Over resends the name that life used, which someone else may have taken meanwhile — stranding the client on an overlay whose only button no longer works. Renaming always succeeds, and the client shows the result for free because labels are drawn from `state`, not from what was typed. A name frees the moment its owner dies or closes the tab.
+- **Names are drawn above the body, at a floored size, in their own pass.** Source section 6 asks only that players be drawn. `drawPieces` previously put the name inside the disc and skipped it below 13px of radius, which meant a freshly spawned player could not see their own name: mass 40 is a 3.6-unit radius, about 9px at the follow-cam's spawn zoom. The name now sits just above the disc at a size clamped to 11–16px, outlined so it reads against the backdrop and against other blobs, and drawn in a second pass over all pieces so a small blob painted later cannot cover a bigger one's label. Mass keeps the old behaviour and stays inside the body, where a small disc genuinely has no room. Note this labels every *piece*, so a split player wears its name eight times — harmless until Phase 5 makes splitting reachable, and worth revisiting there as one label per centroid.
 
 ---
 
@@ -61,39 +76,39 @@ Because the clock lives on the world rather than in a module global, a scenario 
 - [x] **[Agent]** `server/config.py`.
   - **From source plan section 5:** `TICK_RATE = 30`, `MIN_SPLIT_MASS = 35`, `MAX_PIECES = 8`, `EAT_RATIO = 1.25`, `SPLIT_KICK_DECAY_SECONDS = 0.5`. Plus `REMERGE_SECONDS = 12`, our pick from the plan's 10–15s range.
   - **Clock:** `SIMULATION_CLOCK_SOURCE` (monotonic) and `MAX_TICK_SECONDS`, per the section above.
-  - **World:** `WORLD_WIDTH`, `WORLD_HEIGHT`, `FOOD_COUNT`, `FOOD_MASS`, `INITIAL_PLAYER_MASS` (above `MIN_SPLIT_MASS`, so a fresh player can split without eating first).
+  - **World:** `WORLD_WIDTH`, `WORLD_HEIGHT`, `FOOD_COUNT`, `FOOD_MASS`, `INITIAL_PLAYER_MASS` (above `MIN_SPLIT_MASS`, so a fresh player can split without eating first). Plus `SPAWN_INVULN_SECONDS` (addition — see Divergence), added in Phase 2 when `join` started choosing spawn points.
   - **Movement:** `BASE_SPEED`, `SPEED_FALLOFF` and `speed_for_mass(mass)` — agar.io style, speed decreasing as mass grows. `SPLIT_KICK_SPEED`, whose total displacement is `SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2`.
   - **Cluster and collision** (additions — see Divergence): `OWN_PIECE_OVERLAP` < `EAT_OVERLAP` < `MERGE_OVERLAP`, all thresholds on engulfment depth, where 0.0 is circles just touching and 1.0 is the smaller fully inside the larger. The ordering is the design: pieces rest in contact, and eating or merging demands real penetration past that resting depth. `OWN_PIECE_OVERLAP < MERGE_OVERLAP` in particular, or the merge pull has no distance to cover and a merge becomes a snap. Plus `COHESION_SPEED`, `MERGE_PULL_SPEED`, `SEPARATION_PASSES`.
-- [x] **[Agent]** `server/models.py` — dataclasses only, no behavior: `Piece(piece_id, x, y, mass, vx, vy, initial_kick_vx, initial_kick_vy, split_time)` where `split_time` gates remerge, `initial_kick_vx/vy` hold the split kick that motion integrates, and `vx/vy` are recomputed from it each tick so the wire and the debug overlays have a current velocity to read; `Player(id, name, pieces, last_input)`; `Food(id, x, y)`.
-- [x] **[Agent]** `server/world.py` — `World` holds `players` and `food` dicts, plus `now` (the simulation clock), a seeded `rng` and an optional `food_target`. Methods `spawn_player`, `spawn_food_to_target_count`, `remove_player`, `new_id`. IDs are uuid4-shaped but drawn from the world's seeded RNG, so a given seed replays exactly; `uuid.uuid4()` directly would not.
+- [x] **[Agent]** `server/models.py` — dataclasses only, no behavior: `Piece(piece_id, x, y, mass, vx, vy, initial_kick_vx, initial_kick_vy, split_time)` where `split_time` gates remerge, `initial_kick_vx/vy` hold the split kick that motion integrates, and `vx/vy` are recomputed from it each tick so the wire and the debug overlays have a current velocity to read; `Player(id, name, pieces, last_input, color, spawn_time, last_total_mass)`, where the last three arrived in Phase 2: `color` rides the wire, `spawn_time` gates spawn invulnerability, and `last_total_mass` is the mid-tick high-water mark `peak_mass` reads (see Divergence for both); `Food(id, x, y)`.
+- [x] **[Agent]** `server/world.py` — `World` holds `players` and `food` dicts, plus `now` (the simulation clock), a seeded `rng` and an optional `food_target`. Methods `spawn_player`, `spawn_food_to_target_count`, `remove_player`, `new_id`. IDs are uuid4-shaped but drawn from the world's seeded RNG, so a given seed replays exactly; `uuid.uuid4()` directly would not. Phase 2 made `spawn_player`'s `x`/`y` optional — omitted, they come from the world RNG and are clamped into the rectangle — and gave it a `color`.
 - [x] **[Agent]** `server/simulation.py` — `step(world, dt)`, which mutates the world in place and holds no module state, so a given `(world, dt)` always produces the same result. In this order:
   1. Apply each player's `last_input` as a normalized direction scaled by `speed_for_mass(piece.mass)`, plus the decaying split kick, and integrate position. Non-finite input is dropped: NaN compares false against every threshold below, so one bad value would skip the separation bail and spread into whatever it touched.
   2. Cluster forces: draw a player's own pieces toward each other at `COHESION_SPEED`, or at `MERGE_PULL_SPEED` once both of a pair's remerge timers have cleared. Skipped for any pair whose split kick is still active, so cohesion never fights the kick.
-  3. Resolve collisions by mass-weighted position projection, then clamp each piece so its **disc** stays inside the world (`center` inset by `radius`). Own pieces settle at `OWN_PIECE_OVERLAP` depth; different players' pieces are solid, *unless* one can eat the other, in which case they are left free to interpenetrate. **The clamp wins over separation**: a pair crushed into a corner keeps residual overlap. Bounds are inviolable, overlap is cosmetic.
+  3. Resolve collisions by mass-weighted position projection, then clamp each piece so its **disc** stays inside the world (`center` inset by `radius`). Own pieces settle at `OWN_PIECE_OVERLAP` depth; different players' pieces are solid, *unless* one can eat the other, in which case they are left free to interpenetrate — and a spawn-protected prey is not an eat, so that pair stays solid and the predator is shoved off. **The clamp wins over separation**: a pair crushed into a corner keeps residual overlap. Bounds are inviolable, overlap is cosmetic.
   4. Player-food collision: the piece's disc covers the pellet's center at some point during this tick's travel (a swept segment test, so a light fragment that hops more than its own diameter still collects food on the path). Radius = `sqrt(mass / π)`.
-  5. Cross-player eating, split fragments included as both predator and prey (the source plan's "split-piece eating"), using the `A.mass > B.mass * 1.25` rule from section 5 and additionally requiring `EAT_OVERLAP` engulfment depth, so a graze is a shove rather than a kill. A player's own pieces are never candidates — they can only remerge.
+  5. Cross-player eating, split fragments included as both predator and prey (the source plan's "split-piece eating"), using the `A.mass > B.mass * 1.25` rule from section 5 and additionally requiring `EAT_OVERLAP` engulfment depth, so a graze is a shove rather than a kill. A player's own pieces are never candidates — they can only remerge. A spawn-protected player is never prey in either direction of the scan, though it eats normally; protection is held by the player, so splitting during it neither forfeits nor extends it. Every player's total mass is recorded here, before eaten pieces are removed, which is the only moment a dying player's final mass exists.
   6. Decay `vx/vy` toward zero over `SPLIT_KICK_DECAY_SECONDS`. Nothing but the split kick ever writes these, so they stay meaningful on the wire.
   7. Remerge same-player pieces whose `split_time` is older than `REMERGE_SECONDS` and whose bodies have sunk to `MERGE_OVERLAP` — deeper than pieces rest at, so the merge pull has to drag them the last of the way.
-  8. Respawn food up to `FOOD_COUNT`.
+  8. Respawn food up to `FOOD_COUNT`. Any pellet whose center landed inside a piece is eaten at rest and replaced, so a spawn on a blob never survives into the broadcast. Bounded by `FOOD_COUNT` extra cycles so a disc that covered the world cannot loop forever.
 
   Also expose `try_split(world, player)`, which aims the kick along `player.last_input` (the wire message carries no direction), splits **every** piece at or above `MIN_SPLIT_MASS` largest-first in one call, and stops at `MAX_PIECES`. Note this exceeds source plan section 5, which describes splitting a single piece.
-- [x] **[Agent]** `server/main.py` — `asyncio` loop sleeping to a tick deadline (remainder of `1/TICK_RATE`, slipping on overrun rather than bursting), calling `simulation.step` with measured elapsed time per the clock contract above. Builds a `World` with 2 hardcoded players: **A** whose `last_input` is recomputed each tick to point at the nearest food, **B** moving in a slow circle. Both start at `DEMO_MASS`, well above spawn size, so mass growth is legible over the short watch. Every ~30 ticks (~1s), prints one summary line: `tick N | A pieces=[m1,m2] pos=(x,y) | B pieces=[m3] pos=(x,y) | food=K`, where a player holding more than one piece also gets ` at=(x,y) (x,y)` — a centroid alone cannot show a split, since two symmetric halves have the same centroid as the whole. After ~3s, call `try_split` on A once so splitting → decay → remerge is visible. Ctrl+C exits cleanly.
+- [x] **[Agent]** `server/demo.py` — the Phase 1 console harness (originally `server/main.py`). `asyncio` loop sleeping to a tick deadline (remainder of `1/TICK_RATE`, slipping on overrun rather than bursting), calling `simulation.step` with measured elapsed time per the clock contract above. Builds a `World` with 2 hardcoded players: **A** whose `last_input` is recomputed each tick to point at the nearest food, **B** moving in a slow circle. Both start at `DEMO_MASS`, well above spawn size, so mass growth is legible over the short watch. Every ~30 ticks (~1s), prints one summary line: `tick N | A pieces=[m1,m2] pos=(x,y) | B pieces=[m3] pos=(x,y) | food=K`, where a player holding more than one piece also gets ` at=(x,y) (x,y)` — a centroid alone cannot show a split, since two symmetric halves have the same centroid as the whole. After ~3s, call `try_split` on A once so splitting → decay → remerge is visible. Ctrl+C exits cleanly. Phase 2's `server/main.py` is the aiohttp entrypoint.
 
 ### Verification tooling (Phase 1)
 
 Not in the source plan. It exists because half the Phase 1 checklist is about motion, and motion cannot be judged from a console.
 
-- [x] **[Agent]** `tests/` — `test_simulation.py` covers every deterministic box below; `test_dt_invariance.py` additionally pins that the same sim time produces the same state at 15Hz / `TICK_RATE` / 60Hz, so nothing quietly becomes frame-rate dependent; `test_main.py` pins the harness helpers, the exact summary line format above, and that the tick loop runs at `TICK_RATE`.
+- [x] **[Agent]** `tests/` — `test_simulation.py` covers every deterministic box below; `test_dt_invariance.py` additionally pins that the same sim time produces the same state at 15Hz / `TICK_RATE` / 60Hz, so nothing quietly becomes frame-rate dependent; `test_main.py` pins the harness helpers in `server/demo.py` and `server/loop.py`, the exact summary line format above, and the tick loop's rate, its `dt`, and its survival of a failing tick. Phase 2 added `test_protocol.py` (message parsing, join, death, `peak_mass`, all without a socket) and `test_ws.py` (round-trips against a real aiohttp app).
 - [x] **[Agent]** `tools/scenarios.py` + `tools/record.py` — one scripted, seeded scenario per verify box, recording real `simulation.step` output to `client/recordings/` (generated artifacts, gitignored).
 - [x] **[Agent]** `client/render.js` — snapshot renderer, camera, interpolation, plus debug overlays for velocity and merge-readiness. **Survives into Phase 3**, where `game.js` imports it as-is.
-- [x] **[Agent]** `client/viewer.html`, `client/viewer.js`, `client/recording.js`, and the viewer half of `client/style.css` — Phase 1 scaffolding. Fate decided in Phase 3.
+- [x] **[Agent]** `client/viewer.html`, `client/viewer.js`, `client/recording.js`, and the viewer half of `client/style.css` — Phase 1 scaffolding. Kept as a regression harness; served only by `python -m tools.record --serve`, not by the game server.
 
 ### Verify each behavior
 
-- [ ] **[Both]** Piece moves in the direction of its player's `last_input`. Mechanism: `test_piece_moves_in_direction_of_input`. Watch it for legibility — does the blob visibly go where it was pointed?
+- [x] **[Both]** Piece moves in the direction of its player's `last_input`. Mechanism: `test_piece_moves_in_direction_of_input`. Watch it for legibility — does the blob visibly go where it was pointed?
 - [x] **[Agent]** Speed decreases as mass grows (bigger blob is slower). `test_speed_for_mass_decreases_as_mass_grows`, `test_heavier_piece_travels_less_per_tick`.
 - [x] **[Agent]** Piece stays inside world bounds — the disc, not just the center, including when crushed into a corner. `test_piece_stays_inside_world_bounds`, `test_bounds_hold_when_blobs_are_crushed_into_a_corner`, `test_body_stays_inside_world_in_every_corner`.
-- [x] **[Agent]** Food gets eaten when a piece's circle covers the food's center at some point during the tick's travel; piece mass increases; food is removed and respawns. `test_food_inside_radius_is_eaten`, `test_food_outside_radius_is_not_eaten`, `test_food_just_inside_radius_is_eaten`, `test_food_just_outside_radius_is_not_eaten`, `test_food_on_the_path_is_eaten_even_when_travel_exceeds_radius`, `test_eaten_food_is_respawned_to_target_count`.
+- [x] **[Agent]** Food gets eaten when a piece's circle covers the food's center at some point during the tick's travel; piece mass increases; food is removed and respawns. A pellet that respawns inside a disc is eaten the same tick. `test_food_inside_radius_is_eaten`, `test_food_outside_radius_is_not_eaten`, `test_food_just_inside_radius_is_eaten`, `test_food_just_outside_radius_is_not_eaten`, `test_food_on_the_path_is_eaten_even_when_travel_exceeds_radius`, `test_eaten_food_is_respawned_to_target_count`, `test_food_that_spawns_on_a_blob_is_eaten_the_same_tick`.
 - [x] **[Agent]** Player-vs-player eat rule: `A.mass > B.mass * 1.25` is required, and equal or near-equal blobs don't eat each other — in both join orders, since the eat check is a two-branch scan and the earlier-joining player is tested first. Eating is per-piece: a predator that overlaps one fragment of a split prey leaves the others alive, and those survivors remerge with only the uneaten mass. `test_eat_requires_mass_ratio_above_1_25`, `test_a_predator_that_joins_late_eats_an_earlier_prey`, `test_eating_some_pieces_of_a_split_prey_leaves_the_rest_to_remerge`.
 - [x] **[Agent]** A player's own pieces never eat each other — they can only remerge. `test_own_pieces_never_eat_each_other`, which stages the pair against a wall: in open field, separation runs before the eat check and holds them too shallow to be eaten anyway, so the test would pass with the rule deleted.
 - [x] **[Both]** Different players' pieces collide solidly when neither can eat the other; a predator is not blocked by its prey. Mechanism: `test_equal_players_collide_instead_of_passing_through`, `test_a_predator_is_not_blocked_by_its_prey`, `test_a_graze_does_not_eat_until_the_predator_sinks_in`. Watch it: does contact *look* solid, or mushy?
@@ -132,7 +147,7 @@ Tick "I saw this behave correctly" per scenario; the sidebar tracks the count. T
 **3. Free-running smoke test — [Both]**
 
 ```
-python -m server.main
+python -m server.demo
 ```
 
 Watch for ~18 seconds. This confirms nothing crashes over a sustained run:
@@ -163,24 +178,46 @@ None of it blocks Phase 2, and some of it is better done *after* Phase 3, when t
 
 Goal: put the tick loop behind an aiohttp WebSocket endpoint and confirm the protocol round-trips using a bare Python client that just prints received state.
 
-- [ ] **[Agent]** Add `aiohttp` to `requirements.txt`.
-- [ ] **[Both]** `pip install -r requirements.txt` (or into a venv).
-- [ ] **[Agent]** Rewrite `server/main.py` as an aiohttp app: static file serving mounted at `/`, WebSocket upgrade at `/ws`, tick loop as an asyncio task alongside the HTTP server. Single port (8000).
-- [ ] **[Agent]** Bind `0.0.0.0`, not `127.0.0.1`, with host and port from environment variables defaulting to the current values. Phase 7's external test cannot pass otherwise, and the failure is indistinguishable from a bad port forward.
-- [ ] **[Agent]** Server → client broadcast every tick, using the exact shape from source plan section 4.
-- [ ] **[Agent]** Client → server messages: `join`, `input`, `split`. Store `last_input` per player and consume it on the next tick.
-- [ ] **[Agent]** Reject `input` messages whose `dx`/`dy` are not finite, at the message boundary. The simulation drops them too, but a client sending them is a client to distrust.
-- [ ] **[Agent]** `join` picks a spawn position and spawns at `INITIAL_PLAYER_MASS`. Phase 1 supplied coordinates by hand; nothing does that for a real player.
-- [ ] **[Agent]** Decide and implement what happens to a player whose last piece is eaten — respawn at `INITIAL_PLAYER_MASS`, or hold as a spectator with an empty piece list. The simulation already produces this state and leaves the player in the world, so without a decision the broadcast emits ghosts. Phase 4's exit criterion cannot be reached until this exists.
-- [ ] **[Agent]** On socket close, call `world.remove_player`. Without it every closed tab leaves a frozen blob in the world forever.
-- [ ] **[Agent]** Keep advancing sim time on measured elapsed time with the `MAX_TICK_SECONDS` clamp, exactly as Phase 1 does — not a fixed `1/TICK_RATE`. `tests/test_dt_invariance.py` covers this and must still pass after the rewrite.
-- [ ] **[Agent]** Keep the tick's state-mutation section synchronous — no `await` mid-mutation (source plan section 3).
-- [ ] **[Agent]** `tools/probe_client.py` — bare Python WebSocket client: connects, sends `join`, prints one line per received `state` message, sends fake `input` occasionally.
-- [ ] **[Agent]** Run server + probe client and confirm the probe sees state broadcasts and its inputs are reflected in the state on the next tick.
+- [x] **[Agent]** Add `aiohttp` to `requirements.txt`. Runtime deps are pinned there; pytest lives in `requirements-dev.txt`.
+- [x] **[Both]** `pip install -r requirements-dev.txt` (or into a venv).
+- [x] **[Agent]** Rewrite `server/main.py` as an aiohttp app: game files at `/`, WebSocket upgrade at `/ws`, tick loop as an asyncio task alongside the HTTP server. Single port (8000). Phase 3 replaced `add_static` with an explicit `/` route and a whitelist; see Divergence. The Phase 1 printout moved to `server/demo.py`.
+- [x] **[Agent]** Bind `0.0.0.0`, not `127.0.0.1`, with `BLOBBY_HOST` / `BLOBBY_PORT` defaulting to `0.0.0.0:8000`. Phase 7's external test cannot pass otherwise, and the failure is indistinguishable from a bad port forward.
+- [x] **[Agent]** Server → client broadcast every tick. `state` is source plan section 4 plus `color` on each player (see Divergence). Pieces stay `{piece_id, x, y, mass}`. Phase 3 moved food to its own message; see Divergence.
+- [x] **[Agent]** Client → server messages: `join` (`name` + `color`), `input`, `split`. Connecting does not spawn. Store `last_input` per player and consume it on the next tick.
+- [x] **[Agent]** `welcome` `{id}` to that socket after a successful join, so Phase 3 can follow-cam without matching on name.
+- [x] **[Agent]** Drop the three messages a join landing mid-broadcast would make wrong: a previous life's `game_over`, a `state` naming the player before its `welcome`, and a `state` snapshotted before its join. See Divergence. `test_stale_game_over_is_dropped_if_the_socket_already_respawned`, `test_state_naming_the_player_is_held_until_welcome_is_sent`, `test_state_snapshotted_before_the_join_is_not_sent_after_welcome`, `test_a_spectator_receives_every_frame`, `test_the_first_state_after_welcome_contains_the_welcomed_id`.
+- [x] **[Agent]** `SPAWN_INVULN_SECONDS` of invulnerability on a live `join`, because `join` is the first thing that ever chose a spawn point unattended. See Divergence. `test_a_joining_player_is_not_eaten_until_spawn_protection_expires`, plus the `test_a_spawn_protected_*` family in `test_simulation.py`.
+- [x] **[Agent]** Reject `input` messages whose `dx`/`dy` are not finite, at the message boundary. The simulation drops them too, but a client sending them is a client to distrust. Malformed JSON is dropped; the connection stays up.
+- [x] **[Agent]** `join` picks a spawn position from the world RNG and spawns at `INITIAL_PLAYER_MASS`. Phase 1 supplied coordinates by hand; nothing did that for a real player.
+- [x] **[Agent]** Last piece eaten: remove the player from the world so the broadcast cannot emit ghosts, and send `game_over` `{peak_mass, survival_seconds}` to that socket. The socket stays open. The next `join` is a respawn (Customize changes name/color first; Respawn resends the last ones). Spectating is connecting and never sending `join`.
+- [x] **[Agent]** `peak_mass` counts mass gained on the tick that killed the player, which is gone from `world` by the time the death is noticed. See Divergence. `test_peak_mass_counts_mass_gained_on_the_tick_that_kills_you`.
+- [x] **[Agent]** On socket close, call `world.remove_player`. Without it every closed tab leaves a frozen blob in the world forever.
+- [x] **[Agent]** Keep advancing sim time on measured elapsed time with the `MAX_TICK_SECONDS` clamp, exactly as Phase 1 does — not a fixed `1/TICK_RATE`. This is `loop.measured_dt`, pinned by `test_measured_dt_*` and, on the loop itself, by `test_tick_loop_advances_sim_time_by_measured_elapsed_not_the_tick_rate` and `test_tick_loop_clamps_a_hitch_instead_of_teleporting`. Note `tests/test_dt_invariance.py` does **not** cover this: it calls `simulation.step` directly and answers the other question, which is what the world does with a `dt` it is handed. Both still pass.
+- [x] **[Agent]** Keep the tick's state-mutation section synchronous — no `await` mid-mutation (source plan section 3).
+- [x] **[Agent]** A tick that raises is logged and skipped rather than cancelling the loop task. See Divergence. `test_tick_loop_survives_a_failing_tick`, `test_tick_loop_survives_a_failing_broadcast`.
+- [x] **[Agent]** `tools/probe_client.py` — bare Python WebSocket client: connects, sends `join` unless `--spectate`, prints one line per received `state` / `welcome` / `game_over`, sends fake `input` occasionally.
+- [x] **[Agent]** Run server + probe client and confirm the probe sees state broadcasts and its inputs are reflected in the state on the next tick.
+
+### How to verify
+
+```
+python -m pytest
+python -m server.main
+```
+
+The server logs one line on connect, one on `join`, and one on disconnect. Restart `python -m server.main` to pick up that logging if it is already running.
+
+Then in other terminals:
+
+```
+python -m tools.probe_client --name A
+python -m tools.probe_client --name B
+python -m tools.probe_client --spectate
+```
 
 ### Phase 2 exit criteria
 
-- [ ] **[Human]** Protocol round-trips cleanly with two probe clients connected at once. No log spam, no dropped connections on idle, and a probe that disconnects leaves no blob behind.
+- [x] **[Human]** Protocol round-trips cleanly with two probe clients connected at once. No log spam, no dropped connections on idle, and a probe that disconnects leaves no blob behind. A spectator (`--spectate`) sees those players and never appears in `players`.
 
 ---
 
@@ -188,21 +225,31 @@ Goal: put the tick loop behind an aiohttp WebSocket endpoint and confirm the pro
 
 Goal: one browser tab can move and eat food against a localhost server.
 
-- [ ] **[Agent]** `client/index.html` — canvas element, minimal chrome, name-entry field.
-- [ ] **[Agent]** Extend the existing `client/style.css` (written in Phase 1 for the viewer) with the full-window game canvas rules. Do not recreate it; the two pages share it.
-- [ ] **[Agent]** `client/game.js`, importing `client/render.js` unchanged:
+- [x] **[Agent]** Explicit `/` route serving `index.html`, and a `PUBLIC_FILES` whitelist instead of `add_static`. `add_static("/", CLIENT_DIR)` returns 403 for `/` and would publish the viewer. See Divergence. `test_root_serves_the_menu`, `test_game_client_files_are_served`, `test_viewer_and_recordings_are_not_public`.
+- [x] **[Agent]** Food leaves the `state` broadcast. A `food` message of integer `[x, y]` pairs is sent only when the pellet set changes, or to a socket that has not yet received the current version. See Divergence. `test_food_is_sent_once_then_not_resent_while_unchanged`, `test_eating_a_pellet_resends_food`, `test_a_late_joiner_receives_the_current_food_field`, `test_a_failed_food_send_is_retried_without_advancing_the_cursor`, `test_state_frame_without_food_is_under_4kb`.
+- [x] **[Agent]** Food that spawns on a blob is eaten the same tick, so a pellet never renders inside a body for a frame. `test_food_that_spawns_on_a_blob_is_eaten_the_same_tick`.
+- [x] **[Agent]** `client/index.html` — greeting menu over a full-window canvas: name field, color picker, **Play**, **Spectate**. Play sends `join` with the chosen name and color. Spectate never sends `join`; the tab only receives `state`.
+- [x] **[Agent]** Extend the existing `client/style.css` (written in Phase 1 for the viewer) with the full-window game canvas rules and the menu / Game Over overlay. Do not recreate it; the two pages share it.
+- [x] **[Agent]** `client/game.js`, importing `client/render.js`:
   - `requestAnimationFrame` render loop, decoupled from server tick rate.
-  - WebSocket connection to `/ws`; send `join` on open.
-  - Mouse position → normalized `dx/dy` relative to player center; send throttled to ~20/sec.
-  - Camera centered on the player's piece centroid, zooming out as total mass grows — `followCamera` in `render.js` already does this.
-  - **Interpolation between the last two received state snapshots** (source plan section 6 flags this as non-optional). `interpolateStates` in `render.js` does the blend; `game.js` owns the part that isn't there yet — buffering the last two snapshots and deciding the blend factor from elapsed time, absorbing a late or dropped tick.
-- [ ] **[Agent]** Decide the fate of `client/viewer.*`, `client/recording.js` and `tools/record.py`: keep as a regression harness, or delete. Do not leave it ambiguous.
-- [ ] **[Human]** Start server, open `http://localhost:8000`, confirm you can move around and eat food. Mass shown numerically somewhere for sanity.
+  - WebSocket connection to `/ws`. Do **not** send `join` on open — wait for Play. After `welcome`, follow-cam on that id: the server guarantees the next `state` this socket receives contains it, so follow the first snapshot that has it rather than assuming the very next frame is one.
+  - Mouse position → normalized `dx/dy` relative to player center; send throttled to ~20/sec. Ignored while spectating or on the menu.
+  - Camera centered on the followed piece centroid, zooming out as total mass grows — `followCamera` in `render.js` already does this.
+  - **Interpolation between the last two received state snapshots** (source plan section 6 flags this as non-optional). `interpolateStates` in `render.js` does the blend; `game.js` owns buffering the last two snapshots and deciding the blend factor from elapsed time, absorbing a late or dropped tick. `interpolateStates` spreads player fields (including `color`) and `drawPieces` prefers `player.color` over `colorForId`.
+  - On `game_over`: overlay "Game Over!" with peak mass and survival time, plus **Customize** (back to the greeting menu) and **Respawn** (send `join` again with the last name and color).
+  - Spectate: mouse click focuses the blob under the cursor, or cycles to the next living player when the click lands on empty world. Until the first click the camera frames the whole arena. Escape returns to the greeting menu.
+  - Hold the most recent `food` message and splice it into the snapshot before handing it to `drawWorld`. `render.js` still expects `state.food`.
+  - Reconnect with a doubling backoff behind a "Connection lost" overlay, dropping to the menu on return because the lost life cannot be resumed. See [Divergence](#divergence-from-the-source-plan).
+  - Every box in this bullet is `[Agent]` by ownership but `[Human]` by proof — see [Divergence](#divergence-from-the-source-plan) on the JavaScript test gap. The `[Human]` boxes below are the only thing standing behind this file.
+- [x] **[Agent]** Every live player's name is unique, so two blobs cannot both be labelled "jack". `unique_name` suffixes rather than rejecting the join; colors are deliberately still allowed to collide. See [Divergence](#divergence-from-the-source-plan). `test_a_taken_name_is_suffixed_rather_than_duplicated`, `test_name_collision_ignores_case`, `test_a_name_is_free_again_once_its_owner_is_gone`, `test_a_suffixed_name_still_fits_the_length_cap`, `test_the_suffix_itself_is_not_duplicated`, `test_two_sockets_claiming_one_name_are_told_apart_but_keep_their_color`.
+- [x] **[Agent]** Names are readable at every size, including your own at spawn mass, which the original in-disc label was too small to show. Drawn above the body in a second pass. See [Divergence](#divergence-from-the-source-plan).
+- [x] **[Agent]** Decide the fate of `client/viewer.*`, `client/recording.js` and `tools/record.py`: keep as a regression harness, served only by `python -m tools.record --serve` on 8080. Not on the game port.
+- [x] **[Human]** Start server, open `http://localhost:8000`, set a name and color, Play, confirm you can move around and eat food. Mass shown numerically somewhere for sanity. Confirm Spectate does not spawn a blob, and that dying shows Game Over with working Customize / Respawn.
 
 ### Phase 3 exit criteria
 
-- [ ] **[Human]** Movement feels smooth (no visible 30Hz stutter — that means interpolation is working). Food gets eaten reliably.
-- [ ] **[Human]** The Phase 1 cluster values (`COHESION_SPEED`, `MERGE_PULL_SPEED`, the three overlap thresholds) still feel right now that they are visible for the first time. Retune here if not; this is the first honest opportunity.
+- [x] **[Human]** Movement feels smooth (no visible 30Hz stutter — that means interpolation is working). Food gets eaten reliably.
+- [x] **[Human]** The Phase 1 cluster values (`COHESION_SPEED`, `MERGE_PULL_SPEED`, the three overlap thresholds) still feel right now that they are visible for the first time. Retune here if not; this is the first honest opportunity.
 
 ---
 
@@ -210,15 +257,20 @@ Goal: one browser tab can move and eat food against a localhost server.
 
 Goal: two players can see and eat each other.
 
-- [ ] **[Human]** Open two browser tabs at `http://localhost:8000`, use different names.
-- [ ] **[Human]** Confirm each tab renders the other player.
-- [ ] **[Human]** Grow one blob well past the other and confirm it can eat the smaller one (subject to the 1.25 mass ratio). Note that a heavier blob is *slower*, so walking into fleeing prey will not catch it — corner it, or split into it.
-- [ ] **[Human]** Confirm a fully-eaten player does whatever Phase 2 decided (respawn or spectate), in both tabs.
+- [x] **[Human]** Open two browser tabs at `http://localhost:8000`, use different names.
+- [x] **[Human]** Confirm each tab renders the other player.
+- [x] **[Human]** Grow one blob well past the other and confirm it can eat the smaller one (subject to the 1.25 mass ratio). Note that a heavier blob is *slower*, so walking into fleeing prey will not catch it — corner it, or split into it. Wait out `SPAWN_INVULN_SECONDS` first: a just-joined blob cannot be eaten and will be shoved instead.
+- [x] **[Human]** Confirm a fully-eaten player sees Game Over with peak mass and survival time, and can Customize or Respawn, in both tabs. Peak mass should include anything swallowed on the fatal tick.
+- [ ] **[Both]** Judge the spawn invulnerability window on a screen — is 3s enough to get clear, and does a shoved predator read as blocked rather than broken? Retune `SPAWN_INVULN_SECONDS` here.
+- [x] **[Agent]** Reconnect on a dropped socket, behind an overlay that says so. Without it a closed socket left the last snapshot on screen forever, frozen under a live-looking mass readout — indistinguishable from the desync the exit criterion below asks about. See [Divergence](#divergence-from-the-source-plan).
+- [x] **[Human]** Give both tabs the *same* name and confirm the second becomes `name (2)`, so they are still tellable apart. The same color in both tabs is fine and expected — only names are made unique.
+- [x] **[Human]** Confirm you can read your own name above your own blob the moment you spawn, at spawn mass, in both tabs.
+- [x] **[Human]** Restart the server with both tabs open. Each should show "Connection lost", come back on its own, and land on the greeting menu with its name and color still filled in — not resume the life it lost.
 - [ ] **[Agent]** Fix any bugs surfaced (state broadcast omissions, race conditions, wrong ownership checks, etc.) as you report them.
 
 ### Phase 4 exit criteria
 
-- [ ] **[Human]** Two-player eating works both directions when the mass ratio is met. Neither tab desyncs after a few minutes of play.
+- [x] **[Human]** Two-player eating works both directions when the mass ratio is met. Neither tab desyncs after a few minutes of play. A tab that froze *without* showing the reconnect overlay is a real bug worth chasing; one that showed it merely lost its socket.
 
 ---
 
@@ -246,7 +298,7 @@ Goal: spacebar splits, following the section 5 rules verified in Phase 1.
 Goal: N Python bot clients playing autonomously.
 
 - [ ] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
-- [ ] **[Agent]** Decision loop: from the most recent received state, move toward the nearest edible entity (food or a smaller player); flee if a larger player is closer than the nearest edible target. No pathfinding. `input_toward_nearest_food` in the Phase 1 harness is the seed of this.
+- [ ] **[Agent]** Decision loop: from the most recent received state, move toward the nearest edible entity (food or a smaller player); flee if a larger player is closer than the nearest edible target. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the seed of this.
 - [ ] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world.
 - [ ] **[Human]** Play against them in a browser tab. Confirm bots don't deadlock, don't spin in place, and don't crash on player disconnect.
 
@@ -265,7 +317,7 @@ Goal: reachable from outside the LAN, independent of the existing SSH forward.
 - [ ] **[Human]** Check the VM's VirtualBox adapter mode (Settings → Network). Note whether it's **Bridged** or **NAT** — routing setup below depends on this.
 - [ ] **[Both]** Copy the repo to the VM (`git clone` inside the VM is easiest once the VM has internet).
 - [ ] **[Agent]** Write a short `scripts/vm_bootstrap.sh` — installs Python 3.13 (or 3.12), `pip`, sets up a venv, `pip install -r requirements.txt`, ufw rule.
-- [ ] **[Agent]** Keep the Phase 1 viewer and `client/recordings/` out of the static mount. They are development tooling and this server faces the internet.
+- [x] **[Agent]** Keep the Phase 1 viewer and `client/recordings/` out of the static mount. They are development tooling and this server faces the internet. Done in Phase 3: `PUBLIC_FILES` whitelist, viewer served only by `tools/record.py --serve`.
 - [ ] **[Human]** Run `scripts/vm_bootstrap.sh` on the VM.
 - [ ] **[Human]** `sudo ufw allow 8000/tcp` on the VM (also done by the bootstrap script; verify with `sudo ufw status`).
 - [ ] **[Human]** Start the server on the VM. Ideally under a systemd unit or `tmux`/`screen` so it survives your SSH session.

@@ -5,11 +5,13 @@
  * 4 of the build plan:
  *
  *   { type: "state",
- *     players: [{ id, name, pieces: [{ piece_id, x, y, mass }] }],
+ *     players: [{ id, name, color, pieces: [{ piece_id, x, y, mass }] }],
  *     food:    [{ id, x, y }] }
  *
  * Nothing in this file knows where that state came from. The Phase 1 viewer
- * feeds it recorded frames; the Phase 3 client will feed it WebSocket messages.
+ * feeds it recorded frames; game.js feeds it WebSocket messages, splicing in
+ * the separate `food` message (bare `{x, y}` — the live wire format drops the
+ * pellet ids, and nothing here reads them).
  * Keep it that way: anything that depends on recordings belongs in viewer.js.
  */
 
@@ -48,6 +50,26 @@ export function colorForId(id) {
     fill: `hsla(${hue}, 70%, 55%, 0.75)`,
     stroke: `hsl(${hue}, 75%, 42%)`,
     text: `hsl(${hue}, 85%, 88%)`,
+  };
+}
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * Same roles as `colorForId`: 0.75-alpha fill, darker stroke, light text.
+ * Opaque hex would hide cluster overlap the viewer draws translucent.
+ */
+export function colorsFromHex(hex) {
+  if (typeof hex !== "string" || !HEX_COLOR.test(hex)) return null;
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const { h, s, l } = rgbToHsl(r, g, b);
+  return {
+    hue: h,
+    fill: `hsla(${h}, ${s}%, ${l}%, 0.75)`,
+    stroke: `hsl(${h}, ${Math.min(100, s + 5)}%, ${clamp(l - 13, 0, 100)}%)`,
+    text: `hsl(${h}, ${Math.min(100, s + 15)}%, ${clamp(Math.max(l + 33, 88), 0, 100)}%)`,
   };
 }
 
@@ -114,6 +136,13 @@ export function worldToScreen(camera, viewport, x, y) {
   };
 }
 
+export function screenToWorld(camera, viewport, x, y) {
+  return {
+    x: (x - viewport.width / 2) / camera.scale + camera.x,
+    y: (y - viewport.height / 2) / camera.scale + camera.y,
+  };
+}
+
 // --- interpolation --------------------------------------------------------
 
 /**
@@ -141,13 +170,12 @@ export function interpolateStates(previous, next, alpha) {
   }
 
   const players = next.players.map((player) => ({
-    id: player.id,
-    name: player.name,
+    ...player,
     pieces: player.pieces.map((piece) => {
       const old = before.get(piece.piece_id);
       if (!old) return piece;
       return {
-        piece_id: piece.piece_id,
+        ...piece,
         x: old.x + (piece.x - old.x) * alpha,
         y: old.y + (piece.y - old.y) * alpha,
         mass: old.mass + (piece.mass - old.mass) * alpha,
@@ -155,7 +183,7 @@ export function interpolateStates(previous, next, alpha) {
     }),
   }));
 
-  return { type: "state", players, food: next.food };
+  return { ...next, players };
 }
 
 // --- drawing --------------------------------------------------------------
@@ -230,21 +258,34 @@ function drawFood(ctx, state, camera, viewport) {
   }
 }
 
+// A name is never allowed to shrink out of existence, so its size is clamped
+// rather than derived from the radius alone. Mass keeps the old behaviour of
+// vanishing on a small disc: it lives inside the body, where there is no room.
+const NAME_MIN_PX = 11;
+const NAME_MAX_PX = 16;
+const MASS_LABEL_MIN_RADIUS_PX = 13;
+const LABEL_OUTLINE = "rgba(4, 7, 14, 0.85)";
+
 function drawPieces(ctx, state, camera, viewport, labels) {
   // Smallest last, so a big blob never completely hides a small one.
   const drawOrder = [];
   for (const player of state.players) {
-    for (const piece of player.pieces) drawOrder.push({ player, piece });
+    for (const piece of player.pieces) {
+      drawOrder.push({
+        player,
+        piece,
+        color: colorsFromHex(player.color) || colorForId(player.id),
+      });
+    }
   }
   drawOrder.sort((a, b) => b.piece.mass - a.piece.mass);
 
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  for (const { player, piece } of drawOrder) {
+  for (const { piece, color } of drawOrder) {
     const point = worldToScreen(camera, viewport, piece.x, piece.y);
     const radius = radiusForMass(piece.mass) * camera.scale;
-    const color = colorForId(player.id);
 
     ctx.beginPath();
     ctx.arc(point.x, point.y, Math.max(radius, 2), 0, Math.PI * 2);
@@ -253,14 +294,39 @@ function drawPieces(ctx, state, camera, viewport, labels) {
     ctx.lineWidth = Math.max(1, Math.min(3, radius * 0.12));
     ctx.strokeStyle = color.stroke;
     ctx.stroke();
-
-    if (!labels || radius < 13) continue;
-    ctx.fillStyle = color.text;
-    ctx.font = `600 ${Math.min(15, Math.max(9, radius * 0.42))}px ui-monospace, monospace`;
-    ctx.fillText(player.name, point.x, point.y - radius * 0.18);
-    ctx.font = `${Math.min(13, Math.max(8, radius * 0.34))}px ui-monospace, monospace`;
-    ctx.fillText(piece.mass.toFixed(0), point.x, point.y + radius * 0.32);
   }
+
+  if (!labels) return;
+
+  // Names ride *above* the disc rather than inside it, and are drawn in a
+  // second pass over the same order. Both are needed for a name to be readable
+  // at all times: inside the body it disappears on anything as small as a
+  // freshly spawned player, and in the first pass a smaller blob painted later
+  // covers the name of the bigger one it is sitting on.
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  for (const { player, piece, color } of drawOrder) {
+    const point = worldToScreen(camera, viewport, piece.x, piece.y);
+    const radius = radiusForMass(piece.mass) * camera.scale;
+    const size = clamp(radius * 0.4, NAME_MIN_PX, NAME_MAX_PX);
+
+    ctx.font = `600 ${size}px ui-monospace, monospace`;
+    ctx.lineWidth = Math.max(2, size * 0.22);
+    ctx.strokeStyle = LABEL_OUTLINE;
+    ctx.fillStyle = color.text;
+    // Outlined because the name now sits on the backdrop, the grid, or whatever
+    // blob happens to be behind it, none of which it was contrasted against
+    // while it lived inside its own body.
+    const nameY = point.y - Math.max(radius, 2) - size * 0.65;
+    ctx.strokeText(player.name, point.x, nameY);
+    ctx.fillText(player.name, point.x, nameY);
+
+    if (radius < MASS_LABEL_MIN_RADIUS_PX) continue;
+    ctx.font = `${Math.min(13, Math.max(8, radius * 0.34))}px ui-monospace, monospace`;
+    ctx.fillText(piece.mass.toFixed(0), point.x, point.y);
+  }
+  ctx.restore();
 }
 
 /**
@@ -361,6 +427,20 @@ export function drawInputRays(ctx, state, camera, viewport, inputs) {
     ctx.stroke();
   }
   ctx.restore();
+}
+
+function rgbToHsl(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l: l * 100 };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return { h: h * 60, s: s * 100, l: l * 100 };
 }
 
 function clamp(value, low, high) {

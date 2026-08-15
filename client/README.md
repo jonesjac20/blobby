@@ -1,17 +1,27 @@
 # client
 
-Browser code. Split deliberately into a reusable core and Phase 1 scaffolding.
+Browser code. Split deliberately into a reusable core, the live game client, and Phase 1 scaffolding.
 
-## Reusable (Phase 3 will build on these)
+## Reusable
 
-- `render.js` — camera, snapshot interpolation and canvas drawing. Operates purely on the server → client `state` message from section 4 of the build plan, so it does not care whether that state arrived over a WebSocket or came out of a recording. Phase 3's `game.js` should import this unchanged.
-- `style.css` — design tokens and the full-bleed canvas rules.
+- `render.js` — camera, snapshot interpolation and canvas drawing. Operates purely on the server → client `state` message from section 4 of the build plan, so it does not care whether that state arrived over a WebSocket or came out of a recording. `game.js` imports it as-is.
+- `style.css` — design tokens, viewer chrome, and the Phase 3 full-window overlay / HUD rules under `body.game`.
 
-`render.js` also already covers `followCamera` (centred on the player's piece centroid, zooming out as total mass grows) and the blend half of the interpolation section 6 of the build plan calls for. Note what `interpolateStates` is *not*: it takes the blend factor as an argument, so the hard part of live interpolation — buffering the last two snapshots and deriving that factor from elapsed time, while absorbing a late or dropped tick — is Phase 3 work that has no counterpart here. A recording hands the viewer a complete, evenly spaced, seekable frame array, which is the one input a live client never gets.
+`render.js` covers `followCamera` (centred on the player's piece centroid, zooming out as total mass grows) and the blend half of the interpolation section 6 of the build plan calls for. `interpolateStates` takes the blend factor as an argument; `game.js` buffers the last two live snapshots and derives that factor from elapsed time.
 
-`interpolateStates` returns `next`'s set of pieces with blended positions, which is right for a live client — you always want the newest authoritative piece list — but means a caller wanting one snapshot exactly as recorded should render it directly rather than asking for a blend factor of zero. The viewer does that whenever it is paused.
+`drawPieces` paints in two passes: every disc largest-first so a big blob cannot hide a small one, then every name. Names sit *above* their disc at a size floored at 11px and outlined for contrast, because the original in-disc label vanished below 13px of radius — which is what a freshly spawned player looks like at the follow-cam's spawn zoom, so you could not read your own name. Mass still lives inside the body and still disappears on a disc too small to hold it.
+
+`interpolateStates` returns `next`'s set of pieces with blended positions, which is right for a live client — you always want the newest authoritative piece list — but means a caller wanting one snapshot exactly as recorded should render it directly rather than asking for a blend factor of zero. The viewer does that whenever it is paused. Player fields other than `pieces` (including `color`) are passed through; `drawPieces` prefers `player.color` over `colorForId`.
 
 The deliberate exceptions are `drawVelocityArrows`, `drawInputRays` and `drawMergeReady`. Split-kick velocity, `last_input` and the remerge timer are not in the wire format, so those take their data as a separate argument and the real client simply never calls them.
+
+## Live client
+
+- `index.html` + `game.js` — greeting menu, follow-cam, interpolation, mouse aim, Game Over. Served by `python -m server.main` at `http://localhost:8000`. Connecting does not spawn; Play sends `join`, Spectate never does. Spectate focuses the blob under a click, cycles on a click into empty world, and Escape returns to the menu.
+
+Two things to know before editing it. `WORLD` mirrors `WORLD_WIDTH` / `WORLD_HEIGHT` from `server/config.py` because nothing on the wire carries the arena size — change one without the other and the client draws the wrong rectangle around a correctly-clamped world. And a dropped socket reconnects with a doubling backoff behind the `#offline` overlay, then drops to the greeting menu: the server deletes a socket's player when it closes, so the life is gone and rejoining silently would read as a teleport back to spawn mass. Spectators carry on instead, having lost nothing. Both are recorded under Divergence in `docs/GUIDEBOOK.md`.
+
+No part of this file is under test. See `docs/feel-pass.md` section D.
 
 ## Phase 1 only
 
@@ -21,16 +31,20 @@ The deliberate exceptions are `drawVelocityArrows`, `drawInputRays` and `drawMer
 
 ## Running it
 
-From the project root:
+Game client, from the project root:
+
+```
+python -m server.main
+```
+
+Then open `http://localhost:8000`.
+
+Verification viewer:
 
 ```
 python -m tools.record --serve
 ```
 
-That regenerates the recordings and opens the viewer. Without `--serve` it only writes the files. A static server is needed because `render.js` is an ES module, which browsers refuse to load over `file://`; in Phase 2 aiohttp takes over the serving.
+That regenerates the recordings and opens the viewer on port 8080. Without `--serve` it only writes the files. A static server is needed because `render.js` is an ES module, which browsers refuse to load over `file://`.
 
-Space plays and pauses, arrow keys step one frame (hold shift for ten).
-
-## Phase 3
-
-`index.html` + `game.js` land here, importing `render.js` and driving it from a `/ws` connection instead of recorded frames. `style.css` gets extended rather than replaced, since both pages share it. Deciding whether `viewer.*` and `recordings/` stay as a regression tool or get deleted is an explicit Phase 3 checklist item — see `docs/GUIDEBOOK.md`.
+Space plays and pauses in the viewer, arrow keys step one frame (hold shift for ten).
