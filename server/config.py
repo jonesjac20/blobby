@@ -64,17 +64,17 @@ SPAWN_INVULN_SECONDS = 5.0
 # move faster (`speed_for_mass`), so a split fragment can travel more than
 # its own radius in one tick. Food collection is a swept test along that
 # path, so pellets on the trajectory are still eaten.
-BASE_SPEED = 400
+BASE_SPEED = 325
 # Initial magnitude of the velocity kick given to a freshly split piece. Total
 # kick displacement is SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2, so the
 # halves of a mass-100 blob pop about 30 units apart - several blob widths, and
 # unmistakable. The kick does not have to stay small to keep the halves in
 # contact; COHESION_SPEED below is what pulls them back.
-SPLIT_KICK_SPEED = 100
+SPLIT_KICK_SPEED = 140
 
 # Exponent of the agar.io-style speed falloff. Larger means heavier blobs slow
 # down more sharply.
-SPEED_FALLOFF = 0.4
+SPEED_FALLOFF = 0.7
 
 # --- soft-body cluster and collision ---------------------------------------
 #
@@ -94,7 +94,7 @@ EAT_OVERLAP = 0.5
 MERGE_OVERLAP = 0.6
 
 # World units per second each of a player's pieces drifts toward its neighbours.
-COHESION_SPEED = 10.0
+COHESION_SPEED = 12.0
 # World units per second once a pair's remerge timer clears, at zero gap.
 # Close in, this is the whole pull: a resting pair still sinks over several
 # ticks rather than snapping. Far out, MERGE_RECALL adds to it.
@@ -103,10 +103,10 @@ MERGE_PULL_SPEED = 8.0
 # A fragment 100 units out closes at MERGE_PULL_SPEED + 100 * MERGE_RECALL, so
 # a split that drifted off still returns once the timer clears. Linear in
 # distance, so the time to arrive stays bounded even across a large world.
-MERGE_RECALL = 2.0
+MERGE_RECALL = 3.0
 # Position-projection rounds per tick. Projection is dt-independent, so this is
 # the only knob deciding how firmly a crowded cluster is pushed apart.
-SEPARATION_PASSES = 4
+SEPARATION_PASSES = 2
 
 
 def speed_for_mass(mass: float) -> float:

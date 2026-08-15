@@ -184,6 +184,7 @@ def serialize_state(world: World) -> dict:
                         "x": piece.x,
                         "y": piece.y,
                         "mass": piece.mass,
+                        "remerge_in": round(simulation.remerge_in(world, piece), 2),
                     }
                     for piece in player.pieces
                 ],

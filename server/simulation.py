@@ -115,6 +115,16 @@ def _merge_ready(world: World, piece: Piece) -> bool:
     return world.now - piece.split_time >= REMERGE_SECONDS
 
 
+def remerge_in(world: World, piece: Piece) -> float:
+    """Seconds until this piece's remerge timer clears. Zero if it already has.
+
+    Derived from `World.now` the same way `is_spawn_protected` is: the remaining
+    duration rides the wire, not the timestamp, so a client cannot hurry it.
+    """
+    remaining = REMERGE_SECONDS - (world.now - piece.split_time)
+    return remaining if remaining > 0.0 else 0.0
+
+
 def is_spawn_protected(world: World, player: Player) -> bool:
     """Whether this player is still inside the spawn invulnerability window.
 

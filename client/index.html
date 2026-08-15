@@ -10,7 +10,14 @@
     <div class="canvas-wrap">
       <canvas id="game-canvas"></canvas>
       <div id="hud" class="hud" hidden>
-        <span id="mass" class="mass">0</span>
+        <span class="stat">
+          <span class="hud-label">mass</span>
+          <span id="mass">0</span>
+        </span>
+        <span id="remerge" class="stat" hidden>
+          <span class="hud-label">remerge</span>
+          <span id="remerge-time">0</span>s
+        </span>
         <span id="protected" class="protected" hidden>protected</span>
       </div>
     </div>

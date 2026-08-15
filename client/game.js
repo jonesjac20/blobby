@@ -3,7 +3,8 @@
  *
  * Connects on load and does not send join until Play. Food is held separately
  * and spliced onto a copy of the interpolated snapshot at draw time. Spacebar
- * sends split while playing; held-key auto-repeat is ignored.
+ * sends split while playing; held-key auto-repeat is ignored. Wheel zooms the
+ * follow-cam while playing or spectating.
  */
 
 import {
@@ -14,6 +15,7 @@ import {
   interpolateStates,
   playerCentroid,
   playerMass,
+  playerRemergeIn,
   radiusForMass,
   resizeCanvas,
   screenToWorld,
@@ -24,6 +26,9 @@ const INPUT_INTERVAL_MS = 1000 / 20;
 const FOLLOW_SMOOTHING = 6;
 const DEADZONE_PX = 8;
 const MAX_DT = 0.1;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2.5;
+const ZOOM_SENSITIVITY = 0.0015;
 // Doubling from half a second to eight, so a server that comes straight back up
 // is caught almost immediately while a tab left open overnight is not hammering
 // a machine that is off.
@@ -40,6 +45,8 @@ let initialPlayerMass = 50;
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
 const massEl = document.getElementById("mass");
+const remergeEl = document.getElementById("remerge");
+const remergeTimeEl = document.getElementById("remerge-time");
 const protectedEl = document.getElementById("protected");
 const menu = document.getElementById("menu");
 const gameOver = document.getElementById("game-over");
@@ -86,6 +93,7 @@ let lastInputAt = 0;
 let lastTimestamp = 0;
 
 const camera = createCamera();
+let zoomFactor = 1;
 /** @type {{ snapshot: object, viewport: { width: number, height: number } } | null} */
 let lastDraw = null;
 
@@ -266,6 +274,7 @@ function sendJoin() {
 function enterPlaying() {
   mode = "playing";
   followId = null;
+  zoomFactor = 1;
   menu.hidden = true;
   gameOver.hidden = true;
   hud.hidden = true;
@@ -288,6 +297,7 @@ function enterSpectate() {
   mode = "spectating";
   selfId = null;
   followId = null;
+  zoomFactor = 1;
   hud.hidden = true;
   menu.hidden = true;
   gameOver.hidden = true;
@@ -386,8 +396,8 @@ function tick(timestamp) {
 
   if (canFollow) {
     const options = snapCamera
-      ? { smoothing: 0, dt: 0, referenceMass: initialPlayerMass }
-      : { smoothing: FOLLOW_SMOOTHING, dt, referenceMass: initialPlayerMass };
+      ? { smoothing: 0, dt: 0, referenceMass: initialPlayerMass, zoomFactor }
+      : { smoothing: FOLLOW_SMOOTHING, dt, referenceMass: initialPlayerMass, zoomFactor };
     followCamera(camera, snapshot, followId, viewport, options);
     snapCamera = false;
   } else {
@@ -397,6 +407,9 @@ function tick(timestamp) {
   if (mode === "playing" && followed && followId === selfId) {
     hud.hidden = false;
     massEl.textContent = String(Math.round(playerMass(followed)));
+    const wait = playerRemergeIn(followed);
+    remergeEl.hidden = wait < 0.05;
+    if (wait >= 0.05) remergeTimeEl.textContent = wait.toFixed(1);
     protectedEl.hidden = !followed.protected;
   } else if (mode === "playing") {
     hud.hidden = true;
@@ -431,6 +444,18 @@ retryBtn.addEventListener("click", () => {
 canvas.addEventListener("pointermove", (event) => {
   pointer = pointerOnCanvas(event);
 });
+
+window.addEventListener(
+  "wheel",
+  (event) => {
+    if (mode !== "playing" && mode !== "spectating") return;
+    event.preventDefault();
+    const pixels = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+    zoomFactor *= Math.exp(-pixels * ZOOM_SENSITIVITY);
+    zoomFactor = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoomFactor));
+  },
+  { passive: false }
+);
 
 canvas.addEventListener("click", (event) => {
   if (mode !== "spectating" || !lastDraw) return;

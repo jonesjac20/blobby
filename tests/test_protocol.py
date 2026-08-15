@@ -11,6 +11,7 @@ from server.config import (
     FOOD_MASS,
     INITIAL_PLAYER_MASS,
     NAME_MAX_LEN,
+    REMERGE_SECONDS,
     SPAWN_INVULN_SECONDS,
     TICK_RATE,
     WORLD_HEIGHT,
@@ -94,6 +95,7 @@ def test_serialize_state_matches_wire_shape_and_includes_color(world):
                     "x": 100.0,
                     "y": 200.0,
                     "mass": 40,
+                    "remerge_in": 0,
                 }
             ],
         }
@@ -305,6 +307,32 @@ def test_serialize_state_keeps_protected_after_a_split(world):
     listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
     assert listed["protected"] is True
     assert len(listed["pieces"]) == 2
+
+
+def test_serialize_state_reports_remerge_remaining_after_a_split(world):
+    """The countdown is remaining duration, not a timestamp the client can hurry."""
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+    player = world.players[session.player_id]
+    player.last_input = (1.0, 0.0)
+    assert simulation.try_split(world, player) == 1
+
+    listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
+    assert [piece["remerge_in"] for piece in listed["pieces"]] == [
+        pytest.approx(REMERGE_SECONDS),
+        pytest.approx(REMERGE_SECONDS),
+    ]
+
+    world.now += 3.0
+    listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
+    assert [piece["remerge_in"] for piece in listed["pieces"]] == [
+        pytest.approx(REMERGE_SECONDS - 3.0),
+        pytest.approx(REMERGE_SECONDS - 3.0),
+    ]
+
+    world.now += REMERGE_SECONDS
+    listed = next(p for p in serialize_state(world)["players"] if p["id"] == player.id)
+    assert [piece["remerge_in"] for piece in listed["pieces"]] == [0, 0]
 
 
 def test_join_honours_debug_spawn_env(world, monkeypatch):

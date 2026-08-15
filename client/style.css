@@ -430,7 +430,7 @@ body.game .hud {
   z-index: 1;
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: 16px;
   color: var(--text);
   font: 20px/1.2 var(--mono);
   pointer-events: none;
@@ -438,6 +438,13 @@ body.game .hud {
 
 body.game .hud[hidden] {
   display: none;
+}
+
+body.game .hud .hud-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 body.game .hud .protected {

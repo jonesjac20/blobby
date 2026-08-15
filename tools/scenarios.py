@@ -127,6 +127,7 @@ class Recorder:
                         "x": round(piece.x, 2),
                         "y": round(piece.y, 2),
                         "mass": round(piece.mass, 2),
+                        "remerge_in": round(max(0.0, REMERGE_SECONDS - age), 2),
                     }
                 )
                 debug_pieces[piece.piece_id] = {
