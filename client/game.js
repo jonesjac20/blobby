@@ -24,8 +24,17 @@ const INPUT_INTERVAL_MS = 1000 / 20;
 const FOLLOW_SMOOTHING = 6;
 const DEADZONE_PX = 8;
 const MAX_DT = 0.1;
+// Doubling from half a second to eight, so a server that comes straight back up
+// is caught almost immediately while a tab left open overnight is not hammering
+// a machine that is off.
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 8000;
+// Mirrors WORLD_WIDTH / WORLD_HEIGHT in server/config.py. Nothing on the wire
+// carries the arena size, so changing it there means changing it here: the
+// simulation would clamp to the new bounds while the client kept drawing the
+// old rectangle.
 const WORLD = { width: 1200, height: 1200 };
-const WORLD_RECT = [0, 0, 1200, 1200];
+const WORLD_RECT = [0, 0, WORLD.width, WORLD.height];
 
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
@@ -41,6 +50,10 @@ const customizeBtn = document.getElementById("customize");
 const respawnBtn = document.getElementById("respawn");
 const peakMassEl = document.getElementById("peak-mass");
 const survivalEl = document.getElementById("survival");
+const offline = document.getElementById("offline");
+const offlineTitle = document.getElementById("offline-title");
+const offlineStatus = document.getElementById("offline-status");
+const retryBtn = document.getElementById("retry");
 
 canvas.tabIndex = 0;
 
@@ -51,6 +64,9 @@ let mode = "menu";
 /** @type {WebSocket | null} */
 let socket = null;
 let pendingJoin = false;
+let everConnected = false;
+let reconnectAttempt = 0;
+let reconnectTimer = null;
 /** @type {string | null} */
 let selfId = null;
 /** @type {string | null} */
@@ -102,11 +118,47 @@ function focusCanvas() {
   canvas.focus();
 }
 
+function showOffline() {
+  offlineTitle.textContent = everConnected ? "Connection lost" : "Connecting";
+  offlineStatus.textContent = everConnected
+    ? `Reconnecting… (attempt ${reconnectAttempt})`
+    : "Reaching the server…";
+  offline.hidden = false;
+  blurOverlayButtons();
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer !== null) return;
+  const delay = Math.min(
+    RECONNECT_BASE_MS * 2 ** (reconnectAttempt - 1),
+    RECONNECT_MAX_MS
+  );
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
+}
+
 function connect() {
   socket = new WebSocket(wsUrl());
   socket.addEventListener("open", () => {
+    everConnected = true;
+    reconnectAttempt = 0;
+    offline.hidden = true;
+    // The previous socket's snapshots describe a world this one has not been
+    // told about yet, and its player is gone. Interpolating across the gap
+    // would slide every blob from where it was to where it now is.
+    previousState = null;
+    nextState = null;
+    latestFood = [];
     syncJoinButtons();
-    if (pendingJoin) {
+    // The server removes a socket's player when it closes, so the life that was
+    // in progress cannot be resumed — only replaced. Dropping to the menu says
+    // so, where silently rejoining would look like a teleport back to spawn
+    // mass. A spectator lost nothing and simply carries on.
+    if (mode === "playing" || mode === "gameover") {
+      showMenu();
+    } else if (pendingJoin) {
       pendingJoin = false;
       sendJoin();
     }
@@ -115,7 +167,10 @@ function connect() {
   socket.addEventListener("close", () => {
     socket = null;
     pendingJoin = false;
+    reconnectAttempt += 1;
     syncJoinButtons();
+    showOffline();
+    scheduleReconnect();
   });
 }
 
@@ -329,6 +384,18 @@ playBtn.addEventListener("click", () => sendJoin());
 spectateBtn.addEventListener("click", () => enterSpectate());
 customizeBtn.addEventListener("click", () => showMenu());
 respawnBtn.addEventListener("click", () => sendJoin());
+
+retryBtn.addEventListener("click", () => {
+  // Skipping the rest of the backoff, not stacking a second socket on top of an
+  // attempt already in flight.
+  if (socket !== null) return;
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  offlineStatus.textContent = "Reaching the server…";
+  connect();
+});
 
 canvas.addEventListener("pointermove", (event) => {
   pointer = pointerOnCanvas(event);

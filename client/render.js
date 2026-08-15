@@ -9,7 +9,9 @@
  *     food:    [{ id, x, y }] }
  *
  * Nothing in this file knows where that state came from. The Phase 1 viewer
- * feeds it recorded frames; the Phase 3 client will feed it WebSocket messages.
+ * feeds it recorded frames; game.js feeds it WebSocket messages, splicing in
+ * the separate `food` message (bare `{x, y}` — the live wire format drops the
+ * pellet ids, and nothing here reads them).
  * Keep it that way: anything that depends on recordings belongs in viewer.js.
  */
 
@@ -147,12 +149,9 @@ export function screenToWorld(camera, viewport, x, y) {
  * Blend two consecutive snapshots. Section 6 of the build plan calls this
  * non-optional: 30Hz state rendered at 60fps+ visibly stutters without it.
  *
- * Pieces are matched by `piece_id`. 
- * 
- * One that only exists in `next` has just appeared (a split), so it pops in at its true position rather than sliding in
- * from nowhere. 
- * 
- * One that only exists in `previous` is gone (eaten or merged)
+ * Pieces are matched by `piece_id`. One that only exists in `next` has just
+ * appeared (a split), so it pops in at its true position rather than sliding in
+ * from nowhere. One that only exists in `previous` is gone (eaten or merged)
  * and is dropped immediately.
  *
  * The result therefore carries `next`'s set of pieces with blended positions.
@@ -259,21 +258,34 @@ function drawFood(ctx, state, camera, viewport) {
   }
 }
 
+// A name is never allowed to shrink out of existence, so its size is clamped
+// rather than derived from the radius alone. Mass keeps the old behaviour of
+// vanishing on a small disc: it lives inside the body, where there is no room.
+const NAME_MIN_PX = 11;
+const NAME_MAX_PX = 16;
+const MASS_LABEL_MIN_RADIUS_PX = 13;
+const LABEL_OUTLINE = "rgba(4, 7, 14, 0.85)";
+
 function drawPieces(ctx, state, camera, viewport, labels) {
   // Smallest last, so a big blob never completely hides a small one.
   const drawOrder = [];
   for (const player of state.players) {
-    for (const piece of player.pieces) drawOrder.push({ player, piece });
+    for (const piece of player.pieces) {
+      drawOrder.push({
+        player,
+        piece,
+        color: colorsFromHex(player.color) || colorForId(player.id),
+      });
+    }
   }
   drawOrder.sort((a, b) => b.piece.mass - a.piece.mass);
 
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  for (const { player, piece } of drawOrder) {
+  for (const { piece, color } of drawOrder) {
     const point = worldToScreen(camera, viewport, piece.x, piece.y);
     const radius = radiusForMass(piece.mass) * camera.scale;
-    const color = colorsFromHex(player.color) || colorForId(player.id);
 
     ctx.beginPath();
     ctx.arc(point.x, point.y, Math.max(radius, 2), 0, Math.PI * 2);
@@ -282,14 +294,39 @@ function drawPieces(ctx, state, camera, viewport, labels) {
     ctx.lineWidth = Math.max(1, Math.min(3, radius * 0.12));
     ctx.strokeStyle = color.stroke;
     ctx.stroke();
-
-    if (!labels || radius < 13) continue;
-    ctx.fillStyle = color.text;
-    ctx.font = `600 ${Math.min(15, Math.max(9, radius * 0.42))}px ui-monospace, monospace`;
-    ctx.fillText(player.name, point.x, point.y - radius * 0.18);
-    ctx.font = `${Math.min(13, Math.max(8, radius * 0.34))}px ui-monospace, monospace`;
-    ctx.fillText(piece.mass.toFixed(0), point.x, point.y + radius * 0.32);
   }
+
+  if (!labels) return;
+
+  // Names ride *above* the disc rather than inside it, and are drawn in a
+  // second pass over the same order. Both are needed for a name to be readable
+  // at all times: inside the body it disappears on anything as small as a
+  // freshly spawned player, and in the first pass a smaller blob painted later
+  // covers the name of the bigger one it is sitting on.
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  for (const { player, piece, color } of drawOrder) {
+    const point = worldToScreen(camera, viewport, piece.x, piece.y);
+    const radius = radiusForMass(piece.mass) * camera.scale;
+    const size = clamp(radius * 0.4, NAME_MIN_PX, NAME_MAX_PX);
+
+    ctx.font = `600 ${size}px ui-monospace, monospace`;
+    ctx.lineWidth = Math.max(2, size * 0.22);
+    ctx.strokeStyle = LABEL_OUTLINE;
+    ctx.fillStyle = color.text;
+    // Outlined because the name now sits on the backdrop, the grid, or whatever
+    // blob happens to be behind it, none of which it was contrasted against
+    // while it lived inside its own body.
+    const nameY = point.y - Math.max(radius, 2) - size * 0.65;
+    ctx.strokeText(player.name, point.x, nameY);
+    ctx.fillText(player.name, point.x, nameY);
+
+    if (radius < MASS_LABEL_MIN_RADIUS_PX) continue;
+    ctx.font = `${Math.min(13, Math.max(8, radius * 0.34))}px ui-monospace, monospace`;
+    ctx.fillText(piece.mass.toFixed(0), point.x, point.y);
+  }
+  ctx.restore();
 }
 
 /**

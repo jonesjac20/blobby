@@ -9,13 +9,19 @@ Browser code. Split deliberately into a reusable core, the live game client, and
 
 `render.js` covers `followCamera` (centred on the player's piece centroid, zooming out as total mass grows) and the blend half of the interpolation section 6 of the build plan calls for. `interpolateStates` takes the blend factor as an argument; `game.js` buffers the last two live snapshots and derives that factor from elapsed time.
 
+`drawPieces` paints in two passes: every disc largest-first so a big blob cannot hide a small one, then every name. Names sit *above* their disc at a size floored at 11px and outlined for contrast, because the original in-disc label vanished below 13px of radius — which is what a freshly spawned player looks like at the follow-cam's spawn zoom, so you could not read your own name. Mass still lives inside the body and still disappears on a disc too small to hold it.
+
 `interpolateStates` returns `next`'s set of pieces with blended positions, which is right for a live client — you always want the newest authoritative piece list — but means a caller wanting one snapshot exactly as recorded should render it directly rather than asking for a blend factor of zero. The viewer does that whenever it is paused. Player fields other than `pieces` (including `color`) are passed through; `drawPieces` prefers `player.color` over `colorForId`.
 
 The deliberate exceptions are `drawVelocityArrows`, `drawInputRays` and `drawMergeReady`. Split-kick velocity, `last_input` and the remerge timer are not in the wire format, so those take their data as a separate argument and the real client simply never calls them.
 
 ## Live client
 
-- `index.html` + `game.js` — greeting menu, follow-cam, interpolation, mouse aim, Game Over. Served by `python -m server.main` at `http://localhost:8000`. Connecting does not spawn; Play sends `join`, Spectate never does.
+- `index.html` + `game.js` — greeting menu, follow-cam, interpolation, mouse aim, Game Over. Served by `python -m server.main` at `http://localhost:8000`. Connecting does not spawn; Play sends `join`, Spectate never does. Spectate focuses the blob under a click, cycles on a click into empty world, and Escape returns to the menu.
+
+Two things to know before editing it. `WORLD` mirrors `WORLD_WIDTH` / `WORLD_HEIGHT` from `server/config.py` because nothing on the wire carries the arena size — change one without the other and the client draws the wrong rectangle around a correctly-clamped world. And a dropped socket reconnects with a doubling backoff behind the `#offline` overlay, then drops to the greeting menu: the server deletes a socket's player when it closes, so the life is gone and rejoining silently would read as a teleport back to spawn mass. Spectators carry on instead, having lost nothing. Both are recorded under Divergence in `docs/GUIDEBOOK.md`.
+
+No part of this file is under test. See `docs/feel-pass.md` section D.
 
 ## Phase 1 only
 

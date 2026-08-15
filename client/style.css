@@ -1,9 +1,10 @@
 /*
  * Shared client styling.
  *
- * The tokens and the `canvas-wrap` / full-bleed canvas rules are reused by the
- * Phase 3 game client; everything under "Phase 1 viewer" is scaffolding for the
- * verification tool and can be dropped once the real client exists.
+ * The tokens and the `canvas-wrap` / full-bleed canvas rules are shared by both
+ * pages. Everything under "Phase 1 viewer" styles the verification viewer,
+ * which Phase 3 decided to keep as a regression harness — so it stays, even
+ * though the real client no longer needs it.
  */
 
 :root {
@@ -446,6 +447,13 @@ body.game .overlay[hidden] {
   display: none;
 }
 
+/* Above the menu and Game Over both: a lost socket makes either of them a lie,
+ * since neither Play nor Respawn can reach the server. */
+body.game #offline {
+  z-index: 3;
+  background: rgba(11, 14, 22, 0.88);
+}
+
 body.game .overlay .panel {
   min-width: 280px;
   max-width: 360px;
@@ -514,7 +522,8 @@ body.game .overlay button:hover:not(:disabled) {
 }
 
 body.game .overlay #play,
-body.game .overlay #respawn {
+body.game .overlay #respawn,
+body.game .overlay #retry {
   border-color: transparent;
   background: var(--accent);
   color: #06182e;

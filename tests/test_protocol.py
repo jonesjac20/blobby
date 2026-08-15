@@ -122,6 +122,56 @@ def test_second_join_while_alive_is_ignored(world):
     assert world.players[first["id"]].name == "A"
 
 
+def _join_named(world: World, name: str) -> tuple[ClientSession, str]:
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": name, "color": DEFAULT_COLOR})
+    return session, world.players[session.player_id].name
+
+
+def test_a_taken_name_is_suffixed_rather_than_duplicated(world):
+    _, first = _join_named(world, "jack")
+    _, second = _join_named(world, "jack")
+    _, third = _join_named(world, "jack")
+
+    assert [first, second, third] == ["jack", "jack (2)", "jack (3)"]
+
+
+def test_name_collision_ignores_case(world):
+    _, first = _join_named(world, "jack")
+    _, second = _join_named(world, "JACK")
+
+    # The requested casing survives; only the collision test is case-blind.
+    assert first == "jack"
+    assert second == "JACK (2)"
+
+
+def test_a_name_is_free_again_once_its_owner_is_gone(world):
+    session, first = _join_named(world, "jack")
+    world.remove_player(session.player_id)
+    _, second = _join_named(world, "jack")
+
+    assert first == second == "jack"
+
+
+def test_a_suffixed_name_still_fits_the_length_cap(world):
+    longest = "a" * NAME_MAX_LEN
+    _, first = _join_named(world, longest)
+    _, second = _join_named(world, longest)
+
+    assert first == longest
+    assert second == f"{'a' * (NAME_MAX_LEN - 4)} (2)"
+    assert len(second) == NAME_MAX_LEN
+
+
+def test_the_suffix_itself_is_not_duplicated(world):
+    """A player literally named "jack (2)" must not collide into itself."""
+    _, first = _join_named(world, "jack (2)")
+    _, second = _join_named(world, "jack")
+    _, third = _join_named(world, "jack")
+
+    assert [first, second, third] == ["jack (2)", "jack", "jack (3)"]
+
+
 def test_input_and_split_are_ignored_when_not_playing(world):
     session = ClientSession()
     handle_message(world, session, {"type": "input", "dx": 1.0, "dy": 0.0})

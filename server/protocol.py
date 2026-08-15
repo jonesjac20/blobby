@@ -82,6 +82,41 @@ def normalize_color(value: object) -> str:
     return DEFAULT_COLOR
 
 
+def unique_name(world: World, name: str) -> str:
+    """`name`, or `name (2)`, `name (3)`... if a live player already holds it.
+
+    Names are the only thing distinguishing two blobs on screen — colors are
+    deliberately not unique, since a hex picker cannot promise that — so two
+    players answering to "jack" makes the scoreboard and the labels lie.
+    Compared case-insensitively: "Jack" and "jack" are the same name to anyone
+    reading them, and letting them coexist is impersonation with extra steps.
+
+    Suffixing rather than rejecting the join. A rejection needs a new wire
+    message and an error state in the menu, and it can fail a *respawn* — the
+    Game Over screen resends the name it already had, which someone else may
+    have taken during that life — leaving the client stuck on an overlay whose
+    only button no longer works. Renaming always succeeds, and the client shows
+    the result because labels are drawn from `state`, not from what was typed.
+
+    Only live players are considered, so a name is free again the moment its
+    owner is eaten or closes the tab.
+    """
+    taken = {player.name.casefold() for player in world.players.values()}
+    if name.casefold() not in taken:
+        return name
+    # Terminates: every n yields a candidate ending in its own digits, so the
+    # candidates are distinct, and `taken` is finite. The base is truncated to
+    # leave room for the suffix rather than letting the result exceed
+    # NAME_MAX_LEN, which is the cap the label rendering is sized against.
+    n = 2
+    while True:
+        suffix = f" ({n})"
+        candidate = f"{name[: max(NAME_MAX_LEN - len(suffix), 0)]}{suffix}"
+        if candidate.casefold() not in taken:
+            return candidate
+        n += 1
+
+
 def parse_client_message(raw: object) -> dict | None:
     """Return a normalized client message, or None to drop it."""
     if isinstance(raw, (bytes, bytearray)):
@@ -171,7 +206,10 @@ def handle_message(world: World, session: ClientSession, msg: dict) -> dict | No
 def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     if playing_player(world, session) is not None:
         return None
-    session.name = msg["name"]
+    # The name that lands in the world, not the one that was typed, so the log
+    # line and the labels agree. The client learns it from `state` like everyone
+    # else; nothing needs to echo it back on `welcome`.
+    session.name = unique_name(world, msg["name"])
     session.color = msg["color"]
     player = world.spawn_player(session.name, color=session.color)
     # A spawn point is drawn from the RNG and clamped into the rectangle, never

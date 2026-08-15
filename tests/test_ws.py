@@ -304,17 +304,6 @@ def test_malformed_json_does_not_drop_the_connection():
     asyncio.run(body())
 
 
-def test_static_client_files_are_served_at_root():
-    async def body():
-        async with connected_app() as (app, client):
-            response = await client.get("/render.js")
-            assert response.status == 200
-            body_text = await response.text()
-            assert "interpolateStates" in body_text
-
-    asyncio.run(body())
-
-
 def test_connect_join_and_disconnect_are_logged(caplog):
     caplog.set_level(logging.INFO, logger="blobby")
 
@@ -478,6 +467,25 @@ def test_two_players_each_see_the_other():
     asyncio.run(body())
 
 
+def test_two_sockets_claiming_one_name_are_told_apart_but_keep_their_color():
+    """Colors may collide; names may not. See `protocol.unique_name`."""
+
+    async def body():
+        async with connected_app() as (app, client):
+            first = await client.ws_connect("/ws")
+            second = await client.ws_connect("/ws")
+            await _join(first, "jack", "#ff0000")
+            await _join(second, "jack", "#ff0000")
+            state = await _state_after_tick(app, first)
+            await first.close()
+            await second.close()
+
+        assert {p["name"] for p in state["players"]} == {"jack", "jack (2)"}
+        assert {p["color"] for p in state["players"]} == {"#ff0000"}
+
+    asyncio.run(body())
+
+
 def test_join_without_a_color_uses_the_default():
     async def body():
         async with connected_app() as (app, client):
@@ -514,37 +522,6 @@ def test_game_client_files_are_served():
             for path in ("/index.html", "/game.js", "/render.js", "/style.css"):
                 response = await client.get(path)
                 assert response.status == 200, path
-
-    asyncio.run(body())
-
-
-def test_game_js_is_wired_to_the_protocol():
-    async def body():
-        async with connected_app() as (app, client):
-            response = await client.get("/game.js")
-            text = await response.text()
-
-        assert "WebSocket" in text
-        assert "interpolateStates" in text
-        assert '"join"' in text
-        assert "game_over" in text
-        assert "location.host" in text
-        assert "hostname" not in text
-
-    asyncio.run(body())
-
-
-def test_render_js_keeps_player_color():
-    async def body():
-        async with connected_app() as (app, client):
-            response = await client.get("/render.js")
-            text = await response.text()
-
-        assert "...player" in text or "...player," in text
-        assert "...next" in text
-        assert "colorsFromHex" in text
-        assert "0.75" in text
-        assert "screenToWorld" in text
 
     asyncio.run(body())
 

@@ -92,12 +92,19 @@ async def _emit(
             continue
 
 
-async def emit_tick(app: web.Application, dt: float) -> None:
-    """Drive one tick and broadcast. Tests use this instead of the wall clock."""
-    payload, deaths = process_tick(app[WORLD_KEY], app[SESSIONS_KEY], dt)
+async def broadcast(
+    app: web.Application, payload: dict, deaths: list[tuple[ClientSession, dict]]
+) -> None:
+    """Refresh the food field, then send this tick to every socket."""
     stream = app[FOOD_KEY]
     stream.refresh(app[WORLD_KEY])
     await _emit(app[SESSIONS_KEY], payload, deaths, stream)
+
+
+async def emit_tick(app: web.Application, dt: float) -> None:
+    """Drive one tick and broadcast. Tests use this instead of the wall clock."""
+    payload, deaths = process_tick(app[WORLD_KEY], app[SESSIONS_KEY], dt)
+    await broadcast(app, payload, deaths)
 
 
 def _peer(request: web.Request) -> str:
@@ -167,9 +174,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         if session.player_id is not None:
             world.remove_player(session.player_id)
             session.player_id = None
-        log.info(
-            "disconnected %s peer=%s sockets=%d", who, peer, len(sessions)
-        )
+        log.info("disconnected %s peer=%s sockets=%d", who, peer, len(sessions))
     return ws
 
 
@@ -199,9 +204,7 @@ async def _start_ticks(app: web.Application) -> None:
     app[STOP_KEY] = stop
 
     async def emit(payload: dict, deaths: list[tuple[ClientSession, dict]]) -> None:
-        stream = app[FOOD_KEY]
-        stream.refresh(app[WORLD_KEY])
-        await _emit(app[SESSIONS_KEY], payload, deaths, stream)
+        await broadcast(app, payload, deaths)
 
     app[TASK_KEY] = asyncio.create_task(
         tick_loop(app[WORLD_KEY], app[SESSIONS_KEY], emit=emit, stop=stop)

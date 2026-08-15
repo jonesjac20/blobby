@@ -26,6 +26,8 @@ Done before Phase 2: A1, A3, A4 (Phase 4 wording already matched), A5, A7 except
 
 Still deferred: A2 (kick scale — after Phase 3), A6 (food grid — before Phase 6), A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot). E (requirements split) landed with aiohttp in Phase 2.
 
+Changed by Phase 3: the viewer is being kept, so group B is live work rather than work on something about to be deleted — see the note at the head of B. B1 and B3 are no longer viewer-only: `drawFood` and `drawPieces` are now what the live client draws with too. A2's kick scale and the cluster values are finally judgeable on a screen, which was the whole reason for deferring them.
+
 ---
 
 ## A. Simulation feel and correctness
@@ -104,7 +106,9 @@ Done except the last bullet.
 
 ## B. Viewer polish
 
-All in `client/viewer.js` and `client/render.js`. None of it is urgent; the viewer works and is now accurate. Reassess the whole group at Phase 3, when the decision about the viewer's future gets made — do not polish something that is about to be deleted.
+All in `client/viewer.js` and `client/render.js`. None of it is urgent; the viewer works and is now accurate.
+
+**Phase 3 settled the question this group was waiting on.** The viewer is kept as a regression harness, served only by `python -m tools.record --serve`, so nothing here is polish on something about to be deleted. It also split the group in two: B2, B4 and B5 are still viewer-only, but **B1 and B3 are in `render.js`, which the live client now draws with**, so they are player-facing defects rather than harness cosmetics. B3 in particular has changed shape — `drawPieces` prefers `player.color` when the state carries one, so live players get their picked color and only the viewer still falls through to `colorForId`. That narrows B3 to the viewer but does not fix it. Two live players *are* allowed to pick the same hex, deliberately: names are made unique instead (`protocol.unique_name`) and are now drawn above every body at a floored size, so the label rather than the color is what tells two blobs apart. A fix here should not start by overriding a player's color choice.
 
 ### B1. Food is drawn at a fixed screen size that does not exist in the simulation
 
@@ -216,7 +220,9 @@ The suite is strong on the spec'd behaviours. The gaps are compositional and adv
 - **`World.remove_player` has no test at all** — **done**, along with the `mass <= 0` branch of `speed_for_mass` and the massless branch of `engulfment`.
 - **The food radius boundary is bracketed far too loosely.** — **done** (`radius*0.99` / `radius*1.01` on a stationary piece).
 - **Split prey, partial eat, then remerge.** — **done** (`test_eating_some_pieces_of_a_split_prey_leaves_the_rest_to_remerge`).
-- **No JavaScript is tested at all.** `recording.js` advertises in its own header that it has no DOM access "so it can be exercised outside a browser" — an affordance nothing uses. Two things are worth pinning: the delta-encoder round trip (`Recorder.capture`'s encoding and `RecordingCursor.foodAt`'s decoding share an undocumented contract that removals are applied before additions, with no test on either side), and that `render.js`'s `radiusForMass` still agrees with `simulation.radius_for_mass`. A Python test that replays the encoder's own output per frame against `world.food` covers the first without needing a JS test runner.
+- **No JavaScript is tested at all**, and Phase 3 made this the largest single gap in the suite: `client/game.js` is 350 lines holding the mode machine, the follow-cam handoff after `welcome`, the food splice, the input throttle and the Game Over path, and the only thing standing behind any of it is a human opening a tab. `recording.js` advertises in its own header that it has no DOM access "so it can be exercised outside a browser" — an affordance nothing uses. Worth pinning: the mode machine, the `welcome` → follow handoff, and the reconnect path — backoff schedule, the single-socket guard on Retry, and the drop-to-menu-but-not-for-spectators rule (the parts with real branching); the delta-encoder round trip (`Recorder.capture`'s encoding and `RecordingCursor.foodAt`'s decoding share an undocumented contract that removals are applied before additions, with no test on either side); and that `render.js`'s `radiusForMass` still agrees with `simulation.radius_for_mass`. A Python test that replays the encoder's own output per frame against `world.food` covers the delta contract without needing a JS test runner; the rest needs node plus a stub `document`/`WebSocket`, which is the actual cost being avoided.
+
+  **Do not substitute source-grep tests for this.** Phase 3 briefly shipped two — `assert "WebSocket" in text`, `assert "0.75" in text`, `assert "hostname" not in text` against the files served over HTTP. They passed a client with any logic whatsoever, would have failed on a reworded comment, and read in the test list as if `game.js` had coverage. Removed. An honest gap is better than a test that lies about it.
 - **Loose tolerances worth tightening.** `CLUSTER_TOLERANCE` in `test_dt_invariance.py` is justified in world units ("half a world unit") and then applied to a value in *seconds* — half a second is 15 ticks and half the entire merge-pull budget, so that invariance assertion is far weaker than it reads; the real spread is tiny, so 0.02s is free. `test_piece_moves_in_direction_of_input` checks signs only, so a diagonal being √2 too fast would pass. `test_speed_for_mass_decreases_as_mass_grows` is three-point monotonicity, which a step function satisfies. `test_every_piece_of_a_full_cluster_touches_a_neighbour` only requires one neighbour each, so two disjoint clusters of four pass. `test_split_pieces_remerge_after_the_full_cycle` allows a full second of slack, and no test anywhere pins the absolute merge time.
 
 ### Two structural notes on the test suite
