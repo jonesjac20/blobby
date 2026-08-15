@@ -297,9 +297,19 @@ function topmostPlayerAt(snapshot, viewport, sx, sy) {
   return null;
 }
 
-function pointerOnCanvas(event) {
+function pointerOnCanvas(event, viewport) {
   const rect = canvas.getBoundingClientRect();
-  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  // A click can land after a resize and before the next frame rewrites
+  // lastDraw. Map into that frame's viewport so screenToWorld uses the same
+  // size the camera was computed for, which is also what is still on screen
+  // (the old bitmap, stretched).
+  if (!viewport || !rect.width || !rect.height) return { x, y };
+  return {
+    x: x * (viewport.width / rect.width),
+    y: y * (viewport.height / rect.height),
+  };
 }
 
 function maybeSendInput(snapshot, viewport, now) {
@@ -403,7 +413,7 @@ canvas.addEventListener("pointermove", (event) => {
 
 canvas.addEventListener("click", (event) => {
   if (mode !== "spectating" || !lastDraw) return;
-  const point = pointerOnCanvas(event);
+  const point = pointerOnCanvas(event, lastDraw.viewport);
   const hit = topmostPlayerAt(lastDraw.snapshot, lastDraw.viewport, point.x, point.y);
   if (hit) {
     followId = hit;

@@ -56,7 +56,7 @@ INITIAL_PLAYER_MASS = 40
 # world RNG and are only clamped into the rectangle, never away from other
 # bodies, so a join can land inside a blob big enough to eat it on the next
 # tick. This is the window to eat some food or run. A feel parameter like the
-# cluster values - judge it on a screen in Phase 3, not here.
+# cluster values - judge it on a screen in Phase 4, not here.
 SPAWN_INVULN_SECONDS = 3.0
 
 # World units per second for a piece at INITIAL_PLAYER_MASS. Lighter pieces
