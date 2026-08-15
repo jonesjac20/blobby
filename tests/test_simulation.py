@@ -19,10 +19,12 @@ from server.config import (
     REMERGE_SECONDS,
     SPAWN_INVULN_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
-    SPLIT_KICK_SPEED,
+    SPLIT_KICK_RADII,
     TICK_RATE,
     WORLD_HEIGHT,
     WORLD_WIDTH,
+    split_kick_displacement_max,
+    split_kick_speed,
     speed_for_mass,
 )
 from server.models import Food
@@ -602,7 +604,7 @@ def test_cohesion_does_not_eat_into_the_split_kick(world):
     advance(world, SPLIT_KICK_DECAY_SECONDS, TICK)
 
     assert child.x - start == pytest.approx(
-        SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2.0, abs=1e-9
+        split_kick_speed(100) * SPLIT_KICK_DECAY_SECONDS / 2.0, abs=1e-9
     )
     assert parent.x == pytest.approx(500.0, abs=1e-9)
 
@@ -718,7 +720,7 @@ def test_split_produces_two_half_mass_pieces_and_one_kick(world):
 
     kicked = [p for p in player.pieces if p.initial_kick_vx or p.initial_kick_vy]
     assert len(kicked) == 1
-    assert kicked[0].initial_kick_vx == pytest.approx(SPLIT_KICK_SPEED)
+    assert kicked[0].initial_kick_vx == pytest.approx(split_kick_speed(40))
     assert kicked[0].initial_kick_vy == pytest.approx(0.0)
 
 
@@ -733,7 +735,7 @@ def test_split_kick_points_along_last_input(world, direction):
     assert simulation.try_split(world, player) == 1
 
     child = player.pieces[1]
-    kick = SPLIT_KICK_SPEED / math.hypot(*direction)
+    kick = split_kick_speed(40) / math.hypot(*direction)
     assert child.initial_kick_vx == pytest.approx(kick * direction[0])
     assert child.initial_kick_vy == pytest.approx(kick * direction[1])
 
@@ -744,7 +746,7 @@ def test_split_kick_decays_to_zero(world):
     child = player.pieces[1]
 
     advance(world, SPLIT_KICK_DECAY_SECONDS / 2.0, TICK)
-    assert 0.0 < child.vx < SPLIT_KICK_SPEED
+    assert 0.0 < child.vx < split_kick_speed(40)
 
     advance(world, SPLIT_KICK_DECAY_SECONDS, TICK)
     assert child.vx == 0.0
@@ -761,6 +763,69 @@ def test_split_kick_moves_the_new_piece_away_from_the_parent(world):
     # The parent no longer holds still: separation shoves it the other way while
     # the two are still on top of each other.
     assert child.x > parent.x
+
+
+def _isolated_kick_displacement(mass: float) -> float:
+    """Kick-only travel: child staged far enough that cohesion and separation miss."""
+    world = World(seed=0, food_target=0)
+    player = add_player(world, x=500.0, y=500.0, mass=mass)
+    split(world, player)
+    child = player.pieces[1]
+    child.x += 200.0
+    start = child.x
+    advance(world, SPLIT_KICK_DECAY_SECONDS, TICK)
+    return child.x - start
+
+
+def test_split_kick_displacement_grows_with_parent_mass_below_the_cap():
+    small = _isolated_kick_displacement(50)
+    large = _isolated_kick_displacement(200)
+    assert large > small
+    assert small == pytest.approx(
+        SPLIT_KICK_RADII * simulation.radius_for_mass(50), abs=1e-9
+    )
+    assert large == pytest.approx(
+        SPLIT_KICK_RADII * simulation.radius_for_mass(200), abs=1e-9
+    )
+
+
+def test_split_kick_displacement_is_capped_at_a_fraction_of_the_arena():
+    """A giant's lunge is split_kick_displacement_max(), not 6 parent radii."""
+    mass = 10_000
+    uncapped = SPLIT_KICK_RADII * simulation.radius_for_mass(mass)
+    cap = split_kick_displacement_max()
+    assert uncapped > cap
+
+    travelled = _isolated_kick_displacement(mass)
+    assert travelled == pytest.approx(cap, abs=1e-9)
+
+
+def test_split_kick_displacement_max_tracks_the_shorter_arena_axis(monkeypatch):
+    import server.config as config
+
+    monkeypatch.setattr(config, "WORLD_WIDTH", 1000.0)
+    monkeypatch.setattr(config, "WORLD_HEIGHT", 800.0)
+    assert config.split_kick_displacement_max() == pytest.approx(80.0)
+
+
+def test_a_heavy_split_pops_farther_apart_than_the_halves_rest(world):
+    """Feel-pass A2: a mass-2000 split is a lunge, not a twitch resettled by projection."""
+    mass = 2000.0
+    player = add_player(world, x=WORLD_WIDTH / 2, y=WORLD_HEIGHT / 2, mass=mass)
+    split(world, player)
+    _parent, child = player.pieces
+    # Isolation offset so cohesion cannot eat the kick during the 0.5s window.
+    child.x += 200.0
+    start = child.x
+
+    advance(world, SPLIT_KICK_DECAY_SECONDS, TICK)
+
+    travelled = child.x - start
+    resting = 2 * simulation.radius_for_mass(mass / 2) * (1.0 - OWN_PIECE_OVERLAP)
+    assert travelled > resting
+    assert travelled == pytest.approx(
+        SPLIT_KICK_RADII * simulation.radius_for_mass(mass), abs=1e-9
+    )
 
 
 def test_split_resets_a_leftover_kick_on_the_parent(world):

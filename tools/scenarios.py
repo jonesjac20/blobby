@@ -18,7 +18,7 @@ from server.config import (
     MIN_SPLIT_MASS,
     REMERGE_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
-    SPLIT_KICK_SPEED,
+    split_kick_speed,
     TICK_RATE,
     WORLD_HEIGHT,
     WORLD_WIDTH,
@@ -614,7 +614,7 @@ SCENARIOS: list[Scenario] = [
         checklist="Split kick decays to zero over ~`SPLIT_KICK_DECAY_SECONDS`.",
         expect=(
             f"Plays at quarter speed. The velocity arrow on the kicked piece "
-            f"starts at {SPLIT_KICK_SPEED:.0f} and shrinks linearly to exactly 0 "
+            f"starts at {split_kick_speed(200):.0f} and shrinks linearly to exactly 0 "
             f"over {SPLIT_KICK_DECAY_SECONDS}s. After that the only thing still "
             f"moving the halves is cohesion drawing them back together."
         ),

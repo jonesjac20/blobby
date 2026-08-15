@@ -31,7 +31,7 @@ from server.config import (
     SEPARATION_PASSES,
     SPAWN_INVULN_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
-    SPLIT_KICK_SPEED,
+    split_kick_speed,
     speed_for_mass,
 )
 from server.models import Piece, Player
@@ -527,7 +527,8 @@ def try_split(world: World, player: Player) -> int:
         if parent.mass < MIN_SPLIT_MASS:
             continue
 
-        half = parent.mass / 2.0
+        parent_mass = parent.mass
+        half = parent_mass / 2.0
         parent.mass = half
         parent.split_time = world.now
         # A leftover kick from an earlier split would be revived by the
@@ -535,16 +536,17 @@ def try_split(world: World, player: Player) -> int:
         parent.vx = parent.vy = 0.0
         parent.initial_kick_vx = parent.initial_kick_vy = 0.0
 
+        kick = split_kick_speed(parent_mass)
         player.pieces.append(
             Piece(
                 piece_id=world.new_id(),
                 x=parent.x,
                 y=parent.y,
                 mass=half,
-                vx=SPLIT_KICK_SPEED * unit_x,
-                vy=SPLIT_KICK_SPEED * unit_y,
-                initial_kick_vx=SPLIT_KICK_SPEED * unit_x,
-                initial_kick_vy=SPLIT_KICK_SPEED * unit_y,
+                vx=kick * unit_x,
+                vy=kick * unit_y,
+                initial_kick_vx=kick * unit_x,
+                initial_kick_vy=kick * unit_y,
                 split_time=world.now,
             )
         )
