@@ -99,7 +99,9 @@ export function fitCamera(camera, rect, viewport, padding = 1.06) {
 export function followCamera(camera, state, playerId, viewport, options = {}) {
   const {
     baseSpan = 420,
-    referenceMass = 40,
+    // Mirrors INITIAL_PLAYER_MASS in server/config.py. The live client passes
+    // the value from welcome/state; this default is for the viewer.
+    referenceMass = 50,
     smoothing = 0,
     dt = 0,
     minScale = 0.05,
@@ -315,33 +317,59 @@ function drawPieces(ctx, state, camera, viewport, labels) {
 
   if (!labels) return;
 
-  // Names ride *above* the disc rather than inside it, and are drawn in a
-  // second pass over the same order. Both are needed for a name to be readable
-  // at all times: inside the body it disappears on anything as small as a
-  // freshly spawned player, and in the first pass a smaller blob painted later
-  // covers the name of the bigger one it is sitting on.
   ctx.save();
   ctx.lineJoin = "round";
   ctx.miterLimit = 2;
-  for (const { player, piece, color } of drawOrder) {
+
+  // Mass stays inside each disc and still vanishes when the disc is too small
+  // to hold it. Names are a separate pass: one per player, not one per piece.
+  for (const { piece, color } of drawOrder) {
     const point = worldToScreen(camera, viewport, piece.x, piece.y);
     const radius = radiusForMass(piece.mass) * camera.scale;
-    const size = clamp(radius * 0.4, NAME_MIN_PX, NAME_MAX_PX);
-
-    ctx.font = `600 ${size}px ui-monospace, monospace`;
-    ctx.lineWidth = Math.max(2, size * 0.22);
-    ctx.strokeStyle = LABEL_OUTLINE;
-    ctx.fillStyle = color.text;
-    // Outlined because the name now sits on the backdrop, the grid, or whatever
-    // blob happens to be behind it, none of which it was contrasted against
-    // while it lived inside its own body.
-    const nameY = point.y - Math.max(radius, 2) - size * 0.65;
-    ctx.strokeText(player.name, point.x, nameY);
-    ctx.fillText(player.name, point.x, nameY);
-
     if (radius < MASS_LABEL_MIN_RADIUS_PX) continue;
     ctx.font = `${Math.min(13, Math.max(8, radius * 0.34))}px ui-monospace, monospace`;
+    ctx.fillStyle = color.text;
     ctx.fillText(piece.mass.toFixed(0), point.x, point.y);
+  }
+
+  // One name, sitting above the cluster at the centroid's x. A one-piece
+  // player is pixel-identical to the old per-disc label: same x, same gap
+  // above the disc top, same size (total mass is that piece's mass). Sized
+  // from total mass so splitting does not shrink the identity. Outlined
+  // because it now sits on the backdrop, the grid, or whatever blob happens
+  // to be behind it. Larger players first so a smaller name still wins when
+  // two labels overlap.
+  const named = [];
+  for (const player of state.players) {
+    if (!player.pieces.length) continue;
+    const centroid = playerCentroid(player);
+    if (!centroid) continue;
+    let clusterTop = Infinity;
+    for (const piece of player.pieces) {
+      const point = worldToScreen(camera, viewport, piece.x, piece.y);
+      const radius = radiusForMass(piece.mass) * camera.scale;
+      clusterTop = Math.min(clusterTop, point.y - Math.max(radius, 2));
+    }
+    named.push({
+      player,
+      color: colorsFromHex(player.color) || colorForId(player.id),
+      centroid,
+      clusterTop,
+      mass: playerMass(player),
+    });
+  }
+  named.sort((a, b) => b.mass - a.mass);
+
+  ctx.strokeStyle = LABEL_OUTLINE;
+  for (const { player, color, centroid, clusterTop, mass } of named) {
+    const origin = worldToScreen(camera, viewport, centroid.x, centroid.y);
+    const size = clamp(radiusForMass(mass) * camera.scale * 0.4, NAME_MIN_PX, NAME_MAX_PX);
+    ctx.font = `600 ${size}px ui-monospace, monospace`;
+    ctx.lineWidth = Math.max(2, size * 0.22);
+    ctx.fillStyle = color.text;
+    const nameY = clusterTop - size * 0.65;
+    ctx.strokeText(player.name, origin.x, nameY);
+    ctx.fillText(player.name, origin.x, nameY);
   }
   ctx.restore();
 }

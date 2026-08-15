@@ -20,6 +20,7 @@ from server.config import (
     SPAWN_INVULN_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
     SPLIT_KICK_SPEED,
+    TICK_RATE,
     WORLD_HEIGHT,
     WORLD_WIDTH,
     speed_for_mass,
@@ -27,7 +28,7 @@ from server.config import (
 from server.models import Food
 from server.world import World
 
-TICK = 1.0 / 30.0
+TICK = 1.0 / TICK_RATE
 
 
 def separation(a, b) -> float:
@@ -825,14 +826,59 @@ def test_pieces_do_not_remerge_before_timer(world):
     assert len(player.pieces) == 2
 
 
-def test_pieces_do_not_remerge_when_far_apart(world):
+def test_pieces_do_not_remerge_across_the_map_before_the_timer(world):
+    """Distance recall only starts once both timers have cleared."""
+    player = add_player(world, "solo", 100.0, 100.0, mass=50)
+    add_piece(world, player, 1100.0, 1100.0, mass=50)
+    for piece in player.pieces:
+        piece.split_time = world.now - REMERGE_SECONDS + 0.5
+
+    advance(world, 0.4, TICK)
+
+    assert len(player.pieces) == 2
+    assert separation(*player.pieces) > 1000.0
+
+
+def test_merge_ready_pieces_coalesce_from_across_the_map(world):
+    """Once the timer clears, distance does not matter: the leftover flies home."""
     player = add_player(world, "solo", 100.0, 100.0, mass=50)
     add_piece(world, player, 1100.0, 1100.0, mass=50, split_time=-REMERGE_SECONDS)
     player.pieces[0].split_time = -REMERGE_SECONDS
 
-    advance(world, 1.0, TICK)
+    advance(world, 8.0, TICK)
 
-    assert len(player.pieces) == 2
+    assert len(player.pieces) == 1
+    assert player.pieces[0].mass == pytest.approx(100)
+
+
+def test_a_merge_ready_fragment_catches_the_parent_while_steering(world):
+    """A light leftover used to outrun the core and hover just outside it."""
+    player = add_player(world, "solo", 500.0, 500.0, mass=245, last_input=(1.0, 0.0))
+    add_piece(world, player, 530.0, 500.0, mass=35, split_time=-REMERGE_SECONDS)
+    player.pieces[0].split_time = -REMERGE_SECONDS
+
+    advance(world, 3.0, TICK)
+
+    assert len(player.pieces) == 1
+    assert player.pieces[0].mass == pytest.approx(280)
+
+
+def test_an_eight_piece_merge_ready_cluster_collapses_to_one(world):
+    """The while-merged loop has to cascade; two leftover clumps is the bug."""
+    player = add_player(world, "solo", 600.0, 600.0, mass=280)
+    for direction in ((1.0, 0.0), (0.0, 1.0), (-0.8, 0.6)):
+        assert split(world, player, direction) > 0
+    assert len(player.pieces) == MAX_PIECES
+
+    for i, piece in enumerate(player.pieces):
+        piece.split_time = -REMERGE_SECONDS
+        piece.x = 200.0 + (i % 4) * 400.0
+        piece.y = 200.0 + (i // 4) * 800.0
+
+    advance(world, 8.0, TICK)
+
+    assert len(player.pieces) == 1
+    assert player.pieces[0].mass == pytest.approx(280)
 
 
 def test_pieces_in_contact_do_not_merge_until_they_sink_in(world):

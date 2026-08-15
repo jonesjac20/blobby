@@ -21,7 +21,7 @@ from server.models import Player
 from server.world import World
 
 SPLIT_AT_SECONDS = 3.0
-SUMMARY_EVERY_TICKS = 30
+SUMMARY_EVERY_TICKS = TICK_RATE
 CIRCLE_PERIOD_SECONDS = 6.0
 # The demo players start already grown. A spawn-sized blob has a radius of only
 # ~3.6 units, so it sweeps up food too slowly for mass growth to be legible over

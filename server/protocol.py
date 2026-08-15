@@ -14,7 +14,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from server import simulation
-from server.config import DEFAULT_COLOR, NAME_MAX_LEN
+from server.config import (
+    DEFAULT_COLOR,
+    DEFAULT_NAME,
+    INITIAL_PLAYER_MASS,
+    NAME_MAX_LEN,
+    TICK_RATE,
+    WORLD_HEIGHT,
+    WORLD_WIDTH,
+)
 from server.models import Player
 from server.world import World
 
@@ -72,9 +80,9 @@ class FoodStream:
 
 def normalize_name(value: object) -> str:
     if not isinstance(value, str):
-        return "blob"
+        return DEFAULT_NAME
     name = value.strip()[:NAME_MAX_LEN]
-    return name or "blob"
+    return name or DEFAULT_NAME
 
 
 def normalize_color(value: object) -> str:
@@ -151,9 +159,19 @@ def parse_client_message(raw: object) -> dict | None:
     return None
 
 
+def _wire_config() -> dict:
+    """Arena size, tick rate and spawn mass — values the client must not hardcode."""
+    return {
+        "world": {"width": WORLD_WIDTH, "height": WORLD_HEIGHT},
+        "tickRate": TICK_RATE,
+        "initialPlayerMass": INITIAL_PLAYER_MASS,
+    }
+
+
 def serialize_state(world: World) -> dict:
     return {
         "type": "state",
+        **_wire_config(),
         "players": [
             {
                 "id": player.id,
@@ -176,7 +194,11 @@ def serialize_state(world: World) -> dict:
 
 
 def welcome_message(player_id: str) -> dict:
-    return {"type": "welcome", "id": player_id}
+    return {
+        "type": "welcome",
+        "id": player_id,
+        **_wire_config(),
+    }
 
 
 def game_over_message(peak_mass: float, survival_seconds: float) -> dict:
@@ -223,6 +245,25 @@ def _debug_spawn_xy() -> tuple[float, float] | None:
         return None
 
 
+def _debug_spawn_mass() -> float | None:
+    """Pinned spawn mass for local split testing. Not a join field — that would be a cheat.
+
+    `BLOBBY_DEBUG_MASS=280` is read on each join so a test can monkeypatch it.
+    Empty, non-finite, or non-positive values are ignored and spawn stays at
+    INITIAL_PLAYER_MASS.
+    """
+    raw = os.environ.get("BLOBBY_DEBUG_MASS", "").strip()
+    if not raw:
+        return None
+    try:
+        mass = float(raw)
+    except ValueError:
+        return None
+    if not math.isfinite(mass) or mass <= 0:
+        return None
+    return mass
+
+
 def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     if playing_player(world, session) is not None:
         return None
@@ -232,11 +273,14 @@ def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     session.name = unique_name(world, msg["name"])
     session.color = msg["color"]
     spawn = _debug_spawn_xy()
+    mass = _debug_spawn_mass()
+    if mass is None:
+        mass = INITIAL_PLAYER_MASS
     if spawn is None:
-        player = world.spawn_player(session.name, color=session.color)
+        player = world.spawn_player(session.name, color=session.color, mass=mass)
     else:
         player = world.spawn_player(
-            session.name, x=spawn[0], y=spawn[1], color=session.color
+            session.name, x=spawn[0], y=spawn[1], color=session.color, mass=mass
         )
     # A spawn point is drawn from the RNG and clamped into the rectangle, never
     # away from other bodies, so this is the only thing stopping a join from

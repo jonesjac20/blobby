@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 
 from server import simulation
 from server.config import (
+    EAT_RATIO,
     FOOD_COUNT,
+    FOOD_MASS,
     MAX_PIECES,
     MIN_SPLIT_MASS,
     REMERGE_SECONDS,
@@ -21,7 +23,7 @@ from server.config import (
     WORLD_HEIGHT,
     WORLD_WIDTH,
 )
-from server.main import (
+from server.demo import (
     CIRCLE_PERIOD_SECONDS,
     DEMO_MASS,
     SPLIT_AT_SECONDS,
@@ -193,8 +195,8 @@ class Recorder:
                         )
                         if count == 0:
                             events.append(f"{player.name}: ELIMINATED")
-                elif count == prev_count and mass > prev_mass + 1.5:
-                    # Food is worth 1 mass; a bigger jump means it ate a player.
+                elif count == prev_count and mass > prev_mass + FOOD_MASS + 0.5:
+                    # A pellet adds FOOD_MASS; a bigger jump means it ate a player.
                     events.append(f"{player.name}: ATE a piece (+{mass - prev_mass:.0f})")
             self._previous[player.id] = (count, mass)
         return events
@@ -240,8 +242,15 @@ def _input_direction() -> Recorder:
 
 def _speed_vs_mass() -> Recorder:
     rec = Recorder()
+    cx, cy = CENTER
     for index, mass in enumerate((40, 250, 1500)):
-        rec.spawn(f"mass {mass}", 120.0, 300.0 + index * 300.0, mass, last_input=(1.0, 0.0))
+        rec.spawn(
+            f"mass {mass}",
+            cx - 600.0,
+            cy - 300.0 + index * 300.0,
+            mass,
+            last_input=(1.0, 0.0),
+        )
     rec.note("Three blobs released together, all with last_input = (1, 0)")
     rec.run(6.0)
     return rec
@@ -249,8 +258,15 @@ def _speed_vs_mass() -> Recorder:
 
 def _world_bounds() -> Recorder:
     rec = Recorder()
-    rec.spawn("to (0,0)", 320.0, 320.0, 40, last_input=(-1.0, -1.0))
-    rec.spawn("to (max,max)", 880.0, 880.0, 40, last_input=(1.0, 1.0))
+    inset = 320.0
+    rec.spawn("to (0,0)", inset, inset, 40, last_input=(-1.0, -1.0))
+    rec.spawn(
+        "to (max,max)",
+        WORLD_WIDTH - inset,
+        WORLD_HEIGHT - inset,
+        40,
+        last_input=(1.0, 1.0),
+    )
     rec.note("Both blobs are driven straight at opposite corners and held there")
     rec.run(8.0)
     return rec
@@ -258,10 +274,13 @@ def _world_bounds() -> Recorder:
 
 def _food_eating() -> Recorder:
     lane = 15
+    spacing = 60.0
     rec = Recorder(food_target=lane)
+    cx, cy = CENTER
+    start_x = cx - (lane - 1) * spacing / 2
     for i in range(lane):
-        rec.add_food(260.0 + i * 60.0, CENTER[1])
-    eater = rec.spawn("eater", 180.0, CENTER[1], mass=200, last_input=(1.0, 0.0))
+        rec.add_food(start_x + i * spacing, cy)
+    eater = rec.spawn("eater", start_x - 80.0, cy, mass=200, last_input=(1.0, 0.0))
     rec.note(f"{lane} pellets in a lane; food_target={lane} so eaten pellets respawn")
     rec.note(f"starting mass {eater.pieces[0].mass:.0f}")
     rec.run(11.0)
@@ -270,11 +289,14 @@ def _food_eating() -> Recorder:
 
 def _eat_ratio() -> Recorder:
     rec = Recorder()
-    rec.spawn("124 (1.24x)", 380.0, 380.0, 124, last_input=(1.0, 0.0))
-    rec.spawn("100", 580.0, 380.0, 100, last_input=(-1.0, 0.0))
-    rec.spawn("126 (1.26x)", 380.0, 820.0, 126, last_input=(1.0, 0.0))
-    rec.spawn("100 ", 580.0, 820.0, 100, last_input=(-1.0, 0.0))
-    rec.note("Top pair is 1.24x (below the threshold), bottom pair is 1.26x")
+    cx, cy = CENTER
+    rec.spawn("124 (1.24x)", cx - 100.0, cy - 220.0, 124, last_input=(1.0, 0.0))
+    rec.spawn("100", cx + 100.0, cy - 220.0, 100, last_input=(-1.0, 0.0))
+    rec.spawn("126 (1.26x)", cx - 100.0, cy + 220.0, 126, last_input=(1.0, 0.0))
+    rec.spawn("100 ", cx + 100.0, cy + 220.0, 100, last_input=(-1.0, 0.0))
+    rec.note(
+        f"Top pair is 1.24x (below {EAT_RATIO}), bottom pair is 1.26x (above it)"
+    )
     rec.run(4.0)
     return rec
 
@@ -302,8 +324,13 @@ def _own_pieces_no_eat() -> Recorder:
 
 def _split_refused_small() -> Recorder:
     rec = Recorder()
-    small = rec.spawn(f"mass {MIN_SPLIT_MASS - 1}", 450.0, CENTER[1], MIN_SPLIT_MASS - 1)
-    big = rec.spawn(f"mass {MIN_SPLIT_MASS + 1}", 750.0, CENTER[1], MIN_SPLIT_MASS + 1)
+    cx, cy = CENTER
+    small = rec.spawn(
+        f"mass {MIN_SPLIT_MASS - 1}", cx - 150.0, cy, MIN_SPLIT_MASS - 1
+    )
+    big = rec.spawn(
+        f"mass {MIN_SPLIT_MASS + 1}", cx + 150.0, cy, MIN_SPLIT_MASS + 1
+    )
     rec.run(1.0)
     rec.note(f"both attempt to split; MIN_SPLIT_MASS is {MIN_SPLIT_MASS}")
     rec.split(small, 0.0, -1.0)
@@ -321,7 +348,9 @@ def _split_refused_max() -> Recorder:
         angle = i * 2 * math.pi / MAX_PIECES
         rec.add_piece(player, cx + math.cos(angle) * 70.0, cy + math.sin(angle) * 70.0, 100)
     rec.run(1.0)
-    rec.note(f"already at MAX_PIECES ({MAX_PIECES}), every piece is well over 35 mass")
+    rec.note(
+        f"already at MAX_PIECES ({MAX_PIECES}), every piece is well over {MIN_SPLIT_MASS} mass"
+    )
     rec.split(player, 1.0, 0.0)
     rec.run(3.0)
     return rec
@@ -407,7 +436,7 @@ def _merge_pull() -> Recorder:
     player = rec.spawn("half", cx - 4.8, cy, mass=100)
     rec.add_piece(player, cx + 4.8, cy, mass=100)
     # Backdated so the timer clears one second in, rather than making the clip
-    # sit through the full 12s wait that the `remerge` scenario already shows.
+    # sit through the full REMERGE_SECONDS wait that the `remerge` scenario already shows.
     for piece in player.pieces:
         piece.split_time = rec.world.now - REMERGE_SECONDS + 1.0
     rec.note("resting in contact, remerge timer clears at t=1s")
@@ -486,18 +515,18 @@ SCENARIOS: list[Scenario] = [
         ),
         expect=(
             "The blob eats along the lane. Each pellet vanishes as the circle "
-            "covers it, mass ticks up by 1, and a replacement appears elsewhere "
-            "so the food counter holds at 15."
+            f"covers it, mass ticks up by {FOOD_MASS:g}, and a replacement appears "
+            "elsewhere so the food counter holds at 15."
         ),
         build=_food_eating,
-        view=(0.0, 400.0, WORLD_WIDTH, 400.0),
+        view=(0.0, CENTER[1] - 200.0, WORLD_WIDTH, 400.0),
     ),
     Scenario(
         id="eat_ratio",
-        title="Eat rule needs a 1.25x mass ratio",
+        title=f"Eat rule needs a {EAT_RATIO}x mass ratio",
         checklist=(
-            "Player-vs-player eat rule: `A.mass > B.mass * 1.25` is required. Equal "
-            "or near-equal blobs don't eat each other."
+            f"Player-vs-player eat rule: `A.mass > B.mass * {EAT_RATIO}` is required. "
+            "Equal or near-equal blobs don't eat each other."
         ),
         expect=(
             "The top pair (124 vs 100, ratio 1.24) collides solidly and shoves "
@@ -506,6 +535,7 @@ SCENARIOS: list[Scenario] = [
             "becomes 226."
         ),
         build=_eat_ratio,
+        view=_view_around(*CENTER, 1800.0),
     ),
     Scenario(
         id="own_pieces_no_eat",
@@ -528,19 +558,21 @@ SCENARIOS: list[Scenario] = [
         title="Split refused below MIN_SPLIT_MASS",
         checklist="`try_split` refuses to split a piece under `MIN_SPLIT_MASS`.",
         expect=(
-            "Both blobs try to split at t=1s. The 34 does nothing at all. The 36 "
-            "splits into two 18s, proving the attempt itself was valid."
+            f"Both blobs try to split at t=1s. The {MIN_SPLIT_MASS - 1} does nothing "
+            f"at all. The {MIN_SPLIT_MASS + 1} splits into two "
+            f"{(MIN_SPLIT_MASS + 1) / 2:.0f}s, proving the attempt itself was valid."
         ),
         build=_split_refused_small,
-        view=(300.0, 350.0, 600.0, 600.0),
+        view=_view_around(*CENTER, 600.0),
     ),
     Scenario(
         id="split_refused_max",
         title="Split refused at MAX_PIECES",
         checklist="`try_split` refuses to split when the player already has `MAX_PIECES`.",
         expect=(
-            "Eight pieces of 100, every one far above the 35 threshold, try to "
-            "split at t=1s. Nothing happens: still eight pieces, still 100 each."
+            f"{MAX_PIECES} pieces of 100, every one far above the {MIN_SPLIT_MASS} "
+            f"threshold, try to split at t=1s. Nothing happens: still {MAX_PIECES} "
+            "pieces, still 100 each."
         ),
         build=_split_refused_max,
         view=_view_around(*CENTER, 320.0),
@@ -553,9 +585,9 @@ SCENARIOS: list[Scenario] = [
             "split all possible pieces that have been split previously)"
         ),
         expect=(
-            "One 280 becomes 2x140, then 4x70, then 8x35 - every existing piece "
-            "splits on each press. The fourth press is refused at the 8 piece cap. "
-            "Total mass reads 280 throughout."
+            f"One 280 becomes 2x140, then 4x70, then {MAX_PIECES}x{MIN_SPLIT_MASS} - "
+            f"every existing piece splits on each press. The fourth press is refused "
+            f"at the {MAX_PIECES} piece cap. Total mass reads 280 throughout."
         ),
         build=_exponential_split,
         view=_view_around(*CENTER, 260.0),
@@ -626,9 +658,10 @@ SCENARIOS: list[Scenario] = [
             "circles overlap."
         ),
         expect=(
-            "Split at t=1s into two 100s that pop apart and settle back into "
-            "contact. They hold there until t=13s, exactly 12s later, when the "
-            "outline appears and they sink together into a single 200."
+            f"Split at t=1s into two 100s that pop apart and settle back into "
+            f"contact. They hold there until t={1 + REMERGE_SECONDS:.0f}s, exactly "
+            f"{REMERGE_SECONDS:.0f}s later, when the outline appears and they sink "
+            "together into a single 200."
         ),
         build=_remerge,
         view=_view_around(*CENTER, 160.0),
@@ -665,8 +698,10 @@ SCENARIOS: list[Scenario] = [
         title="Free-running demo (server/main.py)",
         checklist="The run described under 'How to verify' in docs/GUIDEBOOK.md.",
         expect=(
-            "A chases the nearest food while B circles. A splits at t=3s and the "
-            "halves recombine at t=15s. Food holds at 600 the whole time."
+            f"A chases the nearest food while B circles. A splits at "
+            f"t={SPLIT_AT_SECONDS:.0f}s and the halves recombine at "
+            f"t={SPLIT_AT_SECONDS + REMERGE_SECONDS:.0f}s. Food holds at "
+            f"{FOOD_COUNT} the whole time."
         ),
         build=_demo,
         tags=["demo"],

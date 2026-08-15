@@ -7,11 +7,14 @@ from conftest import add_player
 
 from server.config import (
     DEFAULT_COLOR,
+    DEFAULT_NAME,
     FOOD_MASS,
     INITIAL_PLAYER_MASS,
     NAME_MAX_LEN,
     SPAWN_INVULN_SECONDS,
     TICK_RATE,
+    WORLD_HEIGHT,
+    WORLD_WIDTH,
 )
 from server import simulation
 from server.loop import process_tick
@@ -39,7 +42,7 @@ def test_parse_join_normalizes_name_and_color():
 def test_parse_join_rejects_empty_and_invalid_color():
     msg = parse_client_message({"type": "join", "name": "   ", "color": "red"})
 
-    assert msg["name"] == "blob"
+    assert msg["name"] == DEFAULT_NAME
     assert msg["color"] == DEFAULT_COLOR
 
 
@@ -76,6 +79,9 @@ def test_serialize_state_matches_wire_shape_and_includes_color(world):
     payload = serialize_state(world)
 
     assert payload["type"] == "state"
+    assert payload["world"] == {"width": WORLD_WIDTH, "height": WORLD_HEIGHT}
+    assert payload["tickRate"] == TICK_RATE
+    assert payload["initialPlayerMass"] == INITIAL_PLAYER_MASS
     assert payload["players"] == [
         {
             "id": player.id,
@@ -102,7 +108,13 @@ def test_join_spawns_at_initial_mass_and_welcome_id_matches(world):
     )
     player = world.players[session.player_id]
 
-    assert reply == {"type": "welcome", "id": player.id}
+    assert reply == {
+        "type": "welcome",
+        "id": player.id,
+        "world": {"width": WORLD_WIDTH, "height": WORLD_HEIGHT},
+        "tickRate": TICK_RATE,
+        "initialPlayerMass": INITIAL_PLAYER_MASS,
+    }
     assert player.name == "A"
     assert player.color == "#abcdef"
     assert player.pieces[0].mass == INITIAL_PLAYER_MASS
@@ -318,6 +330,26 @@ def test_join_ignores_a_malformed_debug_spawn_env(monkeypatch):
     a = next(iter(pinned.players.values())).pieces[0]
     b = next(iter(natural.players.values())).pieces[0]
     assert (a.x, a.y) == (b.x, b.y)
+
+
+def test_join_honours_debug_mass_env(world, monkeypatch):
+    monkeypatch.setenv("BLOBBY_DEBUG_MASS", "280")
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+    player = world.players[session.player_id]
+
+    assert player.pieces[0].mass == 280
+    assert session.peak_mass == 280
+
+
+def test_join_ignores_a_malformed_debug_mass_env(world, monkeypatch):
+    monkeypatch.setenv("BLOBBY_DEBUG_MASS", "nope")
+    session = ClientSession()
+    handle_join(world, session, {"type": "join", "name": "A", "color": DEFAULT_COLOR})
+    player = world.players[session.player_id]
+
+    assert player.pieces[0].mass == INITIAL_PLAYER_MASS
+    assert session.peak_mass == INITIAL_PLAYER_MASS
 
 
 def test_a_joining_player_is_not_eaten_until_spawn_protection_expires(world):
