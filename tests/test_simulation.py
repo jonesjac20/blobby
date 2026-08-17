@@ -132,7 +132,8 @@ def test_speed_for_mass_of_zero_is_base_speed():
 
 def test_speed_for_mass_does_not_fall_below_the_floor():
     floor = BASE_SPEED * SPEED_FLOOR_FRACTION
-    assert speed_for_mass(10_000) == floor
+    # At SPEED_FALLOFF = 0.25, mass 10_000 is still above the floor.
+    assert speed_for_mass(100_000) == floor
     assert speed_for_mass(1_000_000) == floor
     assert speed_for_mass(300) > floor
 
@@ -468,6 +469,25 @@ def test_equal_players_collide_instead_of_passing_through(world):
     assert len(left.pieces) == 1
     assert len(right.pieces) == 1
     assert simulation.engulfment(a, b) == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("hz", [15, 30, 60])
+def test_equal_players_do_not_tunnel_at_low_tick_rates(hz):
+    """One tick of travel at 15Hz can swap sides; projection must keep left left."""
+    dt = 1.0 / hz
+    world = World(seed=0, food_target=0)
+    left = world.spawn_player("left", 480.0, 500.0, mass=100)
+    right = world.spawn_player("right", 520.0, 500.0, mass=100)
+    left.last_input = (1.0, 0.0)
+    right.last_input = (-1.0, 0.0)
+    a, b = left.pieces[0], right.pieces[0]
+
+    for _ in range(round(2.0 / dt)):
+        simulation.step(world, dt)
+        assert a.x <= b.x
+        assert simulation.engulfment(a, b) < EAT_OVERLAP
+
+    assert simulation.engulfment(a, b) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_a_predator_is_not_blocked_by_its_prey(world):

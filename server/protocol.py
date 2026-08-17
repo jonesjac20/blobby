@@ -15,10 +15,13 @@ from typing import Any
 
 from server import simulation
 from server.config import (
+    BASE_SPEED,
     DEFAULT_COLOR,
     DEFAULT_NAME,
     INITIAL_PLAYER_MASS,
     NAME_MAX_LEN,
+    SPEED_FALLOFF,
+    SPEED_FLOOR_FRACTION,
     TICK_RATE,
     WORLD_HEIGHT,
     WORLD_WIDTH,
@@ -164,11 +167,14 @@ def parse_client_message(raw: object) -> dict | None:
 
 
 def _wire_config() -> dict:
-    """Arena size, tick rate and spawn mass — values the client must not hardcode."""
+    """Arena size, tick rate, spawn mass and speed knobs — values the client must not hardcode."""
     return {
         "world": {"width": WORLD_WIDTH, "height": WORLD_HEIGHT},
         "tickRate": TICK_RATE,
         "initialPlayerMass": INITIAL_PLAYER_MASS,
+        "baseSpeed": BASE_SPEED,
+        "speedFalloff": SPEED_FALLOFF,
+        "speedFloorFraction": SPEED_FLOOR_FRACTION,
     }
 
 

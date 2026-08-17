@@ -16,17 +16,36 @@
  */
 
 export function radiusForMass(mass) {
-  // Visual only — simulation.radius_for_mass is still sqrt(mass / π).
-  // Backdrop grid is 100 world units. Area scaling leaves mass 1000 inside
-  // one cell (~36 across). Anchor spawn, then grow so 1000 is several cells.
-  const m = Math.max(mass, 0);
-  const referenceMass = 50;
-  const spawnRadius = Math.sqrt(referenceMass / Math.PI);
-  const GRID = 100;
-  const radiusAt1000 = 2 * GRID; // diameter = 4 cells
-  const VISUAL_EXPONENT =
-    Math.log(radiusAt1000 / spawnRadius) / Math.log(1000 / referenceMass);
-  return spawnRadius * (m / referenceMass) ** VISUAL_EXPONENT;
+  // Matches simulation.radius_for_mass: the eat disc is sqrt(mass / π).
+  // Drawing anything larger made the pictured edge a lie — food under the
+  // rim was not edible, which read as lag once a blob grew past spawn size.
+  return Math.sqrt(Math.max(mass, 0) / Math.PI);
+}
+
+/**
+ * Matches server.config.speed_for_mass. Knobs arrive on welcome/state
+ * (`baseSpeed`, `initialPlayerMass`, `speedFalloff`, `speedFloorFraction`)
+ * so this file does not copy config.py.
+ */
+export function speedForMass(mass, knobs) {
+  const { baseSpeed, initialPlayerMass, speedFalloff, speedFloorFraction } = knobs;
+  if (mass <= 0) return baseSpeed;
+  const raw = baseSpeed * (initialPlayerMass / mass) ** speedFalloff;
+  return Math.max(raw, baseSpeed * speedFloorFraction);
+}
+
+/** Inset a piece's center so its disc stays inside `world`, same as clamp_body_position. */
+export function clampBodyPosition(x, y, mass, bounds) {
+  const radius = radiusForMass(mass);
+
+  function axis(value, limit) {
+    const lo = radius;
+    const hi = limit - radius;
+    if (lo > hi) return limit / 2;
+    return Math.min(Math.max(value, lo), hi);
+  }
+
+  return { x: axis(x, bounds.width), y: axis(y, bounds.height) };
 }
 
 export function playerMass(player) {
@@ -120,7 +139,10 @@ export function fitCamera(camera, rect, viewport, padding = 1.06) {
  */
 export function followCamera(camera, state, playerId, viewport, options = {}) {
   const {
-    baseSpan = 420,
+    // Spawn diameter ~8 fills ~10% of the view. 420 was tuned for a drawn
+    // radius that grew far faster than the eat disc; with physics radius a
+    // mass-1000 blob would be a speck at that span.
+    baseSpan = 80,
     // Mirrors INITIAL_PLAYER_MASS in server/config.py. The live client passes
     // the value from welcome/state; this default is for the viewer.
     referenceMass = 50,
@@ -137,7 +159,7 @@ export function followCamera(camera, state, playerId, viewport, options = {}) {
 
   const mass = Math.max(playerMass(player), referenceMass);
   // Zoom out slower than √mass so a growing blob still fills more of the
-  // screen. √mass cancelled area-based radius and made 100 vs 200 look alike.
+  // screen. Matching the radius exponent would keep 50 and 1000 the same size.
   const CAMERA_ZOOM_EXPONENT = 0.25;
   const span = baseSpan * (mass / referenceMass) ** CAMERA_ZOOM_EXPONENT;
   const massScale = clamp(Math.min(viewport.width, viewport.height) / span, minScale, maxScale);
