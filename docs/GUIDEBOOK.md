@@ -355,9 +355,9 @@ Goal: reachable from outside the LAN, independent of the existing SSH forward.
 
 ### On the VM
 
-- [ ] **[Human]** Check the VM's VirtualBox adapter mode (Settings → Network). Note whether it's **Bridged** or **NAT** — routing setup below depends on this.
-- [ ] **[Both]** Copy the repo to the VM (`git clone` inside the VM is easiest once the VM has internet).
-- [ ] **[Agent]** Write a short `scripts/vm_bootstrap.sh` — installs Python 3.13 (or 3.12), `pip`, sets up a venv, `pip install -r requirements.txt`, ufw rule.
+- [x] **[Human]** Check the VM's VirtualBox adapter mode (Settings → Network). Note whether it's **Bridged** or **NAT** — routing setup below depends on this.
+- [x] **[Both]** Copy the repo to the VM (`git clone` inside the VM is easiest once the VM has internet).
+- [x] **[Agent]** Write a short `scripts/vm_bootstrap.sh` — installs Python 3.13 (or 3.12), `pip`, sets up a venv, `pip install -r requirements.txt`, ufw rule.
 - [x] **[Agent]** Keep the Phase 1 viewer and `client/recordings/` out of the static mount. They are development tooling and this server faces the internet. Done in Phase 3: `PUBLIC_FILES` whitelist, viewer served only by `tools/record.py --serve`.
 - [ ] **[Human]** Run `scripts/vm_bootstrap.sh` on the VM.
 - [ ] **[Human]** `sudo ufw allow 8000/tcp` on the VM (also done by the bootstrap script; verify with `sudo ufw status`).
