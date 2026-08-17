@@ -81,7 +81,7 @@ SPLIT_KICK_MAX_ARENA_FRACTION = 0.15
 
 # Exponent of the agar.io-style speed falloff. Larger means heavier blobs slow
 # down more sharply.
-SPEED_FALLOFF = 0.5
+SPEED_FALLOFF = 0.25
 # Floor as a fraction of BASE_SPEED. Without it, (mass ** -SPEED_FALLOFF) goes
 # toward zero and a giant cannot cross the map.
 SPEED_FLOOR_FRACTION = 0.25

@@ -6,6 +6,7 @@ import pytest
 from conftest import add_player
 
 from server.config import (
+    BASE_SPEED,
     DEFAULT_COLOR,
     DEFAULT_NAME,
     FOOD_MASS,
@@ -13,6 +14,8 @@ from server.config import (
     NAME_MAX_LEN,
     REMERGE_SECONDS,
     SPAWN_INVULN_SECONDS,
+    SPEED_FALLOFF,
+    SPEED_FLOOR_FRACTION,
     TICK_RATE,
     WORLD_HEIGHT,
     WORLD_WIDTH,
@@ -83,6 +86,9 @@ def test_serialize_state_matches_wire_shape_and_includes_color(world):
     assert payload["world"] == {"width": WORLD_WIDTH, "height": WORLD_HEIGHT}
     assert payload["tickRate"] == TICK_RATE
     assert payload["initialPlayerMass"] == INITIAL_PLAYER_MASS
+    assert payload["baseSpeed"] == BASE_SPEED
+    assert payload["speedFalloff"] == SPEED_FALLOFF
+    assert payload["speedFloorFraction"] == SPEED_FLOOR_FRACTION
     assert payload["players"] == [
         {
             "id": player.id,
@@ -116,6 +122,9 @@ def test_join_spawns_at_initial_mass_and_welcome_id_matches(world):
         "world": {"width": WORLD_WIDTH, "height": WORLD_HEIGHT},
         "tickRate": TICK_RATE,
         "initialPlayerMass": INITIAL_PLAYER_MASS,
+        "baseSpeed": BASE_SPEED,
+        "speedFalloff": SPEED_FALLOFF,
+        "speedFloorFraction": SPEED_FLOOR_FRACTION,
     }
     assert player.name == "A"
     assert player.color == "#abcdef"

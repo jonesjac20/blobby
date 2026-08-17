@@ -2,12 +2,14 @@
  * Live game client. Drives render.js from a /ws connection.
  *
  * Connects on load and does not send join until Play. Food is held separately
- * and spliced onto a copy of the interpolated snapshot at draw time. Spacebar
- * sends split while playing; held-key auto-repeat is ignored. Wheel zooms the
- * follow-cam while playing or spectating.
+ * and spliced onto a copy of the interpolated snapshot at draw time. Own pieces
+ * are predicted from the latest snapshot and last input; everyone else is
+ * interpolated. Spacebar sends split while playing; held-key auto-repeat is
+ * ignored. Wheel zooms the follow-cam while playing or spectating.
  */
 
 import {
+  clampBodyPosition,
   createCamera,
   drawWorld,
   fitCamera,
@@ -19,13 +21,18 @@ import {
   radiusForMass,
   resizeCanvas,
   screenToWorld,
+  speedForMass,
   worldToScreen,
 } from "./render.js";
 
-const INPUT_INTERVAL_MS = 1000 / 20;
 const FOLLOW_SMOOTHING = 6;
 const DEADZONE_PX = 8;
 const MAX_DT = 0.1;
+// Same ceiling as MAX_TICK_SECONDS: a hitch must not fire the predicted body
+// across the map.
+const PREDICT_MAX_DT = 0.25;
+const PREDICT_CORRECTION = 12;
+const INPUT_EPSILON = 1e-3;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 2.5;
 const ZOOM_SENSITIVITY = 0.0015;
@@ -41,6 +48,9 @@ const RECONNECT_MAX_MS = 8000;
 const world = { width: 0, height: 0 };
 let tickSeconds = 1 / 30;
 let initialPlayerMass = 50;
+let baseSpeed = 200;
+let speedFalloff = 0.25;
+let speedFloorFraction = 0.25;
 
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
@@ -89,8 +99,19 @@ let latestFood = [];
 
 /** @type {{ x: number, y: number } | null} */
 let pointer = null;
-let lastInputAt = 0;
+let lastSentDx = 0;
+let lastSentDy = 0;
+/** @type {number | null} */
+let lastReportedDx = null;
+/** @type {number | null} */
+let lastReportedDy = null;
 let lastTimestamp = 0;
+/** @type {Map<string, { x: number, y: number }>} */
+let predictError = new Map();
+/** @type {Map<string, { x: number, y: number }> | null} */
+let lastPredictedPieces = null;
+/** @type {Set<string> | null} */
+let lastPredictedIds = null;
 
 const camera = createCamera();
 let zoomFactor = 1;
@@ -131,6 +152,27 @@ function applyConfig(msg) {
   if (typeof spawnMass === "number" && Number.isFinite(spawnMass) && spawnMass > 0) {
     initialPlayerMass = spawnMass;
   }
+  const { baseSpeed: speed, speedFalloff: falloff, speedFloorFraction: floor } = msg;
+  if (typeof speed === "number" && Number.isFinite(speed) && speed > 0) {
+    baseSpeed = speed;
+  }
+  if (typeof falloff === "number" && Number.isFinite(falloff) && falloff >= 0) {
+    speedFalloff = falloff;
+  }
+  if (typeof floor === "number" && Number.isFinite(floor) && floor >= 0) {
+    speedFloorFraction = floor;
+  }
+}
+
+function resetPrediction() {
+  lastSentDx = 0;
+  lastSentDy = 0;
+  lastReportedDx = null;
+  lastReportedDy = null;
+  predictError = new Map();
+  lastPredictedPieces = null;
+  lastPredictedIds = null;
+  lastDraw = null;
 }
 
 function worldRect() {
@@ -187,6 +229,7 @@ function connect() {
     previousState = null;
     nextState = null;
     latestFood = [];
+    resetPrediction();
     syncJoinButtons();
     // The server removes a socket's player when it closes, so the life that was
     // in progress cannot be resumed — only replaced. Dropping to the menu says
@@ -225,12 +268,14 @@ function onMessage(event) {
       selfId = msg.id;
       followId = null;
       snapCamera = true;
+      resetPrediction();
       break;
     case "food":
       latestFood = (msg.food || []).map(([x, y]) => ({ x, y }));
       break;
     case "state":
       applyConfig(msg);
+      reconcilePrediction(msg);
       previousState = nextState;
       nextState = msg;
       nextArrivedAt = performance.now();
@@ -247,6 +292,7 @@ function onMessage(event) {
       mode = "gameover";
       selfId = null;
       followId = null;
+      resetPrediction();
       hud.hidden = true;
       peakMassEl.textContent = String(Math.round(msg.peak_mass));
       survivalEl.textContent = Number(msg.survival_seconds).toFixed(1);
@@ -275,6 +321,7 @@ function enterPlaying() {
   mode = "playing";
   followId = null;
   zoomFactor = 1;
+  resetPrediction();
   menu.hidden = true;
   gameOver.hidden = true;
   hud.hidden = true;
@@ -286,6 +333,7 @@ function showMenu() {
   pendingJoin = false;
   selfId = null;
   followId = null;
+  resetPrediction();
   hud.hidden = true;
   gameOver.hidden = true;
   menu.hidden = false;
@@ -345,24 +393,129 @@ function pointerOnCanvas(event) {
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
 
-function maybeSendInput(snapshot, viewport, now) {
+function maybeSendInput(snapshot, viewport) {
   if (mode !== "playing" || !socketIsOpen() || pointer === null || !selfId) return;
   const player = snapshot.players.find((candidate) => candidate.id === selfId);
   if (!player || !player.pieces.length) return;
-  if (now - lastInputAt < INPUT_INTERVAL_MS) return;
-  lastInputAt = now;
 
   const centroid = playerCentroid(player);
   if (!centroid) return;
   const origin = worldToScreen(camera, viewport, centroid.x, centroid.y);
-  const dx = pointer.x - origin.x;
-  const dy = pointer.y - origin.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist < DEADZONE_PX) {
-    sendJson({ type: "input", dx: 0, dy: 0 });
+  const px = pointer.x - origin.x;
+  const py = pointer.y - origin.y;
+  const dist = Math.hypot(px, py);
+  let dx = 0;
+  let dy = 0;
+  if (dist >= DEADZONE_PX) {
+    dx = px / dist;
+    dy = py / dist;
+  }
+
+  lastSentDx = dx;
+  lastSentDy = dy;
+  if (
+    lastReportedDx !== null &&
+    Math.hypot(dx - lastReportedDx, dy - lastReportedDy) < INPUT_EPSILON
+  ) {
     return;
   }
-  sendJson({ type: "input", dx: dx / dist, dy: dy / dist });
+  lastReportedDx = dx;
+  lastReportedDy = dy;
+  sendJson({ type: "input", dx, dy });
+}
+
+function speedKnobs() {
+  return { baseSpeed, initialPlayerMass, speedFalloff, speedFloorFraction };
+}
+
+function pieceIds(player) {
+  return new Set(player.pieces.map((piece) => piece.piece_id));
+}
+
+function setsEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
+  }
+  return true;
+}
+
+function reconcilePrediction(msg) {
+  if (mode !== "playing" || !selfId || !lastPredictedPieces) {
+    predictError = new Map();
+    return;
+  }
+  const mine = msg.players.find((player) => player.id === selfId);
+  if (!mine || !mine.pieces.length) {
+    predictError = new Map();
+    lastPredictedPieces = null;
+    lastPredictedIds = null;
+    return;
+  }
+  const ids = pieceIds(mine);
+  if (!setsEqual(ids, lastPredictedIds)) {
+    // Split, merge, or eat: kick velocity is not on the wire, so snap.
+    predictError = new Map();
+    lastPredictedIds = ids;
+    return;
+  }
+  const nextError = new Map();
+  for (const piece of mine.pieces) {
+    const drawn = lastPredictedPieces.get(piece.piece_id);
+    if (!drawn) continue;
+    nextError.set(piece.piece_id, {
+      x: drawn.x - piece.x,
+      y: drawn.y - piece.y,
+    });
+  }
+  predictError = nextError;
+  lastPredictedIds = ids;
+}
+
+function predictSelf(interpolated, now, frameDt) {
+  if (mode !== "playing" || !selfId || !nextState) {
+    lastPredictedPieces = null;
+    lastPredictedIds = null;
+    return interpolated;
+  }
+  const source = nextState.players.find((player) => player.id === selfId);
+  if (!source || !source.pieces.length) {
+    lastPredictedPieces = null;
+    lastPredictedIds = null;
+    return interpolated;
+  }
+
+  const predictDt = Math.min(Math.max((now - nextArrivedAt) / 1000, 0), PREDICT_MAX_DT);
+  const decay = frameDt > 0 ? Math.exp(-PREDICT_CORRECTION * frameDt) : 1;
+  const knobs = speedKnobs();
+  const clusterSpeed = speedForMass(playerMass(source), knobs);
+  const split = source.pieces.length >= 2;
+  const drawn = new Map();
+
+  const pieces = source.pieces.map((piece) => {
+    const mergeReady = split && !(piece.remerge_in > 0);
+    const speed = mergeReady ? clusterSpeed : speedForMass(piece.mass, knobs);
+    let err = predictError.get(piece.piece_id) || { x: 0, y: 0 };
+    err = { x: err.x * decay, y: err.y * decay };
+    predictError.set(piece.piece_id, err);
+    const rawX = piece.x + lastSentDx * speed * predictDt + err.x;
+    const rawY = piece.y + lastSentDy * speed * predictDt + err.y;
+    const clamped = clampBodyPosition(rawX, rawY, piece.mass, world);
+    drawn.set(piece.piece_id, clamped);
+    return { ...piece, x: clamped.x, y: clamped.y };
+  });
+
+  lastPredictedPieces = drawn;
+  lastPredictedIds = new Set(drawn.keys());
+
+  const predicted = { ...source, pieces };
+  const players = interpolated.players.some((player) => player.id === selfId)
+    ? interpolated.players.map((player) =>
+        player.id === selfId ? predicted : player
+      )
+    : interpolated.players.concat(predicted);
+  return { ...interpolated, players };
 }
 
 function followedPlayer(snapshot) {
@@ -386,7 +539,11 @@ function tick(timestamp) {
   const elapsed = (timestamp - nextArrivedAt) / 1000;
   const alpha = Math.min(Math.max(elapsed / tickSeconds, 0), 1);
   const interpolated = interpolateStates(previousState, nextState, alpha);
-  const snapshot = { ...interpolated, food: latestFood };
+  const withFood = { ...interpolated, food: latestFood };
+  const aimSource = lastDraw ? lastDraw.snapshot : withFood;
+  const aimViewport = lastDraw ? lastDraw.viewport : viewport;
+  maybeSendInput(aimSource, aimViewport);
+  const snapshot = predictSelf(withFood, timestamp, dt);
 
   if (mode === "spectating" && followId && !followedPlayer(snapshot)) {
     cycleFollow(snapshot);
@@ -420,7 +577,6 @@ function tick(timestamp) {
 
   drawWorld(ctx, snapshot, camera, viewport, { world });
   lastDraw = { snapshot, viewport };
-  maybeSendInput(snapshot, viewport, timestamp);
 }
 
 joinForm.addEventListener("submit", (event) => {
