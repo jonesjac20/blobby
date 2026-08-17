@@ -14,7 +14,7 @@ Same as `GUIDEBOOK.md`:
 
 ## Prerequisite
 
-- [ ] **[Human]** `GUIDEBOOK.md` Phase 7 exit criterion is checked off before starting Phase 8.
+- [x] **[Human]** `GUIDEBOOK.md` Phase 7 exit criterion is checked off before starting Phase 8.
 
 ---
 
@@ -22,8 +22,8 @@ Same as `GUIDEBOOK.md`:
 
 Goal: every push is tested and linted before anything gets packaged.
 
-- [ ] **[Agent]** Add `.github/workflows/ci.yml`: on push and pull_request, checkout, set up Python, `pip install -r requirements-dev.txt`, run `pytest`, run `ruff check`.
-- [ ] **[Agent]** Add `ruff` to [`requirements-dev.txt`](../requirements-dev.txt) if it isn't already there.
+- [x] **[Agent]** Add `.github/workflows/ci.yml`: on push and pull_request, checkout, set up Python, `pip install -r requirements-dev.txt`, run `pytest`, run `ruff check`.
+- [x] **[Agent]** Add `ruff` to [`requirements-dev.txt`](../requirements-dev.txt) if it isn't already there.
 - [ ] **[Human]** Push a branch, open a PR, confirm the checks show up and run.
 - [ ] **[Both]** Verify: break a test on purpose, push it, confirm CI goes red before it's merged back.
 - [ ] **[Human, optional]** Turn on branch protection requiring the check to pass before merge. Not required for a one-person POC repo, but cheap and worth mentioning if asked.
