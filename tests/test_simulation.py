@@ -190,7 +190,7 @@ def test_food_outside_radius_is_not_eaten(world):
 
 def test_food_just_inside_radius_is_eaten(world):
     """The rule is circle-covers-center, so the threshold is exactly radius."""
-    player = add_player(world, x=500.0, y=500.0, mass=30)
+    add_player(world, x=500.0, y=500.0, mass=30)
     radius = simulation.radius_for_mass(30)
     world.food["target"] = Food(id="target", x=500.0 + radius * 0.99, y=500.0)
 
@@ -200,7 +200,7 @@ def test_food_just_inside_radius_is_eaten(world):
 
 
 def test_food_just_outside_radius_is_not_eaten(world):
-    player = add_player(world, x=500.0, y=500.0, mass=30)
+    add_player(world, x=500.0, y=500.0, mass=30)
     radius = simulation.radius_for_mass(30)
     world.food["target"] = Food(id="target", x=500.0 + radius * 1.01, y=500.0)
 
@@ -304,7 +304,7 @@ def test_food_grid_candidates_are_a_conservative_superset(world):
 def test_food_grid_eats_a_pellet_in_a_neighbor_cell_on_the_path(world):
     """A pellet just over a cell edge on the sweep is not skipped."""
     start_x = FOOD_GRID_CELL - 2.0
-    player = add_player(
+    add_player(
         world, x=start_x, y=100.0, mass=40, last_input=(1.0, 0.0)
     )
     travel = speed_for_mass(40) * TICK
