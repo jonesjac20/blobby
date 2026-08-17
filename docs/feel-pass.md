@@ -24,7 +24,7 @@ Where a number appears below it was measured, not estimated. Re-measure before y
 
 Done before Phase 2: A1, A3, A4 (Phase 4 wording already matched), A5, A7 except hysteresis, plus the D/E items called out as done on those bullets.
 
-Still deferred: A6 (food grid — before Phase 6), A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot). E (requirements split) landed with aiohttp in Phase 2. A2 (kick scale) landed before Phase 6 so large hunters keep a proportionate lunge.
+Still deferred: A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot). E (requirements split) landed with aiohttp in Phase 2. A2 (kick scale) landed before Phase 6 so large hunters keep a proportionate lunge. A6 (food grid) landed with Phase 6 so a ≥30-bot lobby can hold 30Hz.
 
 Changed by Phase 3: the viewer is being kept, so group B is live work rather than work on something about to be deleted — see the note at the head of B. B1 and B3 are no longer viewer-only: `drawFood` and `drawPieces` are now what the live client draws with too. A2's kick scale and the cluster values are finally judgeable on a screen, which was the whole reason for deferring them.
 
@@ -80,15 +80,13 @@ Sleep to a deadline: track the next tick's target time and sleep the remainder.
 
 **Acceptance:** over a 30s run, tick count is within 1% of `TICK_RATE * elapsed`. `tests/test_dt_invariance.py` must still pass.
 
-### A6. Food collision is O(pieces × FOOD_COUNT) and will bite in Phase 6
+### A6. Food collision is O(pieces × FOOD_COUNT) and will bite in Phase 6 — **done**
 
 With `FOOD_COUNT = 600`, one player at 8 pieces is 4,800 `math.hypot` calls per tick, which is fine. Ten players at 8 pieces is 48,000 distance tests per tick, 1.44M/sec at 30Hz — roughly half a core on food alone, before `_resolve_collisions` (which is `SEPARATION_PASSES * O(bodies²)`, or 4 × 3,160 pairs at 80 bodies).
 
-Phase 6 calls for 3–5 bots plus a human, so the tick budget starts overrunning exactly when bots land, and it will present as "bots feel laggy" rather than as an obvious error. A uniform grid bucketing food by cell makes this near-constant per piece.
+Live values are `FOOD_COUNT = 1800` and the Phase 6 exit bar is ≥30 bots, so the brute scan is not optional. `_eat_food` now buckets pellets on a `FOOD_GRID_CELL` grid and each piece queries a padded AABB of its sweep. **Iteration still walks `world.food` in dict order**, skipping non-candidates, so which pellet is eaten first (and mid-scan radius growth) stays seed-identical. The grid is one structure on the World scan, not per socket.
 
-Do this before Phase 6, not before Phase 2.
-
-**Acceptance:** a benchmark showing per-tick time roughly flat as player count goes 1 → 10, and identical simulation output for a fixed seed (the grid must not change behaviour).
+**Acceptance:** `test_food_grid_candidates_are_a_conservative_superset`, `test_food_grid_eats_a_pellet_in_a_neighbor_cell_on_the_path`, `test_world_is_deterministic_for_a_given_seed`. Existing eat tests still pass.
 
 ### A7. Small hardening in the simulation
 

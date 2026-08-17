@@ -447,6 +447,7 @@ def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
         "version": 1,
         "food": [[101, 200]],
     }
+    assert json.loads(stream.encoded) == stream.payload
 
     stream.refresh(world)
     assert stream.version == 1

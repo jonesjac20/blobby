@@ -45,11 +45,15 @@ NAME_MAX_LEN = 16
 DEFAULT_NAME = "blob"
 DEFAULT_COLOR = "#4fc3f7"
 
-WORLD_WIDTH = 2800
-WORLD_HEIGHT = 2800
+WORLD_WIDTH = 2000
+WORLD_HEIGHT = 2000
 
-FOOD_COUNT = 1800
-FOOD_MASS = 3
+FOOD_COUNT = 1600
+FOOD_MASS = 5
+# Cell size for the eat-scan skip-list (feel-pass A6). Pellets are bucketed once
+# per `_eat_food`; each piece queries a padded AABB and the scan still walks
+# `world.food` in dict order so eats stay seed-identical.
+FOOD_GRID_CELL = 50.0
 
 # Above MIN_SPLIT_MASS so a freshly spawned player can split without eating first.
 INITIAL_PLAYER_MASS = 50
@@ -65,7 +69,7 @@ SPAWN_INVULN_SECONDS = 5.0
 # move faster (`speed_for_mass`), so a split fragment can travel more than
 # its own radius in one tick. Food collection is a swept test along that
 # path, so pellets on the trajectory are still eaten.
-BASE_SPEED = 325
+BASE_SPEED = 200
 # Split-kick displacement as a multiple of the pre-split parent piece's radius.
 # Six radii at mass 100 is ~34 world units - several blob widths, the pop the
 # old flat kick was tuned for. Heavier parents lunge farther; a hard cap below
@@ -77,7 +81,10 @@ SPLIT_KICK_MAX_ARENA_FRACTION = 0.15
 
 # Exponent of the agar.io-style speed falloff. Larger means heavier blobs slow
 # down more sharply.
-SPEED_FALLOFF = 0.7
+SPEED_FALLOFF = 0.5
+# Floor as a fraction of BASE_SPEED. Without it, (mass ** -SPEED_FALLOFF) goes
+# toward zero and a giant cannot cross the map.
+SPEED_FLOOR_FRACTION = 0.25
 
 # --- soft-body cluster and collision ---------------------------------------
 #
@@ -116,7 +123,8 @@ def speed_for_mass(mass: float) -> float:
     """Movement speed in world units per second for a piece of `mass`."""
     if mass <= 0:
         return BASE_SPEED
-    return BASE_SPEED * (INITIAL_PLAYER_MASS / mass) ** SPEED_FALLOFF
+    raw = BASE_SPEED * (INITIAL_PLAYER_MASS / mass) ** SPEED_FALLOFF
+    return max(raw, BASE_SPEED * SPEED_FLOOR_FRACTION)
 
 
 def split_kick_displacement_max() -> float:

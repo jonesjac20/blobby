@@ -8,9 +8,11 @@ from conftest import add_piece, add_player, advance, split
 from server import simulation
 from server.config import (
     BASE_SPEED,
+    SPEED_FLOOR_FRACTION,
     EAT_OVERLAP,
     EAT_RATIO,
     FOOD_COUNT,
+    FOOD_GRID_CELL,
     FOOD_MASS,
     INITIAL_PLAYER_MASS,
     MAX_PIECES,
@@ -126,6 +128,13 @@ def test_speed_for_mass_decreases_as_mass_grows():
 def test_speed_for_mass_of_zero_is_base_speed():
     assert speed_for_mass(0) == BASE_SPEED
     assert speed_for_mass(-1) == BASE_SPEED
+
+
+def test_speed_for_mass_does_not_fall_below_the_floor():
+    floor = BASE_SPEED * SPEED_FLOOR_FRACTION
+    assert speed_for_mass(10_000) == floor
+    assert speed_for_mass(1_000_000) == floor
+    assert speed_for_mass(300) > floor
 
 
 def test_heavier_piece_travels_less_per_tick(world):
@@ -267,6 +276,52 @@ def test_food_that_spawns_on_a_blob_is_eaten_the_same_tick(world):
     leftover = next(iter(world.food.values()))
     assert leftover.x == 50.0
     assert leftover.y == 50.0
+
+
+def test_food_grid_candidates_are_a_conservative_superset(world):
+    """A6: every pellet the sweep can actually hit is in the candidate set."""
+    start = (500.0, 500.0)
+    end = (530.0, 500.0)
+    radius = 8.0
+    inside = Food(id="inside", x=515.0, y=500.0)
+    far = Food(id="far", x=2000.0, y=2000.0)
+    world.food[inside.id] = inside
+    world.food[far.id] = far
+    grid = simulation._food_grid(world)
+    candidates = simulation._candidate_food_ids(
+        grid, start[0], start[1], end[0], end[1], radius
+    )
+    assert inside.id in candidates
+    assert far.id not in candidates
+    assert (
+        simulation._distance_point_to_segment(
+            inside.x, inside.y, start[0], start[1], end[0], end[1]
+        )
+        <= radius
+    )
+
+
+def test_food_grid_eats_a_pellet_in_a_neighbor_cell_on_the_path(world):
+    """A pellet just over a cell edge on the sweep is not skipped."""
+    start_x = FOOD_GRID_CELL - 2.0
+    player = add_player(
+        world, x=start_x, y=100.0, mass=40, last_input=(1.0, 0.0)
+    )
+    travel = speed_for_mass(40) * TICK
+    pellet_x = FOOD_GRID_CELL + 1.0
+    assert start_x + travel > pellet_x
+    world.food["edge"] = Food(id="edge", x=pellet_x, y=100.0)
+
+    simulation.step(world, TICK)
+
+    assert "edge" not in world.food
+
+
+def test_eat_scan_with_a_full_food_field_still_respawns(world_with_food):
+    """A6: 1800 pellets and a moving piece still keep FOOD_COUNT after a step."""
+    add_player(world_with_food, x=200.0, y=200.0, mass=80, last_input=(1.0, 0.2))
+    simulation.step(world_with_food, TICK)
+    assert len(world_with_food.food) == FOOD_COUNT
 
 
 # --- eating other players -------------------------------------------------
@@ -791,7 +846,7 @@ def test_split_kick_displacement_grows_with_parent_mass_below_the_cap():
 
 def test_split_kick_displacement_is_capped_at_a_fraction_of_the_arena():
     """A giant's lunge is split_kick_displacement_max(), not 6 parent radii."""
-    mass = 10_000
+    mass = 50_000
     uncapped = SPLIT_KICK_RADII * simulation.radius_for_mass(mass)
     cap = split_kick_displacement_max()
     assert uncapped > cap
@@ -805,7 +860,7 @@ def test_split_kick_displacement_max_tracks_the_shorter_arena_axis(monkeypatch):
 
     monkeypatch.setattr(config, "WORLD_WIDTH", 1000.0)
     monkeypatch.setattr(config, "WORLD_HEIGHT", 800.0)
-    assert config.split_kick_displacement_max() == pytest.approx(80.0)
+    assert config.split_kick_displacement_max() == pytest.approx(120.0)
 
 
 def test_a_heavy_split_pops_farther_apart_than_the_halves_rest(world):

@@ -67,7 +67,7 @@ async def _emit(
             # `_emit` swallows then retries next tick; a join-window state
             # skip cannot desync food because food is not in `state`.
             try:
-                await session.ws.send_json(stream.payload)
+                await session.ws.send_str(stream.encoded)
             except Exception:
                 pass
             else:

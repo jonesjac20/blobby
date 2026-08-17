@@ -35,7 +35,8 @@ The source plan is the authority on scope. Where this build adds to it, it is re
 - **`peak_mass` is observed mid-tick.** `update_and_eliminate` runs after `simulation.step`, by which point a player killed this tick has no pieces left to measure. `simulation` records `Player.last_total_mass` just before eaten pieces are culled, so mass picked up on the tick that killed you — a pellet, or a fragment of the blob that then ate you — still reaches Game Over.
 - **A failed tick is logged, not fatal.** The tick loop catches exceptions from `process_tick` and from the broadcast and continues. Without it, one throw cancels the task and leaves the HTTP and WebSocket endpoints answering normally over a world that has silently stopped, which reads as a network fault. A throw partway through `step` can leave the world half-mutated; for a POC a visible traceback and a resumed loop beats a frozen one.
 - **An explicit `/` route, and a file whitelist.** `add_static("/", CLIENT_DIR)` maps paths to files and refuses a directory-root request, so `/` returned 403, `/index.html` 404 (no such file yet), and `/viewer.html` plus `/recordings/index.json` 200. Phase 3 serves `index.html` at `/` and only `index.html`, `game.js`, `render.js` and `style.css` under `/{name}`. The Phase 1 viewer stays a regression harness, reachable via `python -m tools.record --serve` on 8080, and is not on the game port — the same decision Phase 7 requires once this process faces the internet.
-- **Food leaves the `state` broadcast.** Source plan section 4 puts a full food list in every `state`. Measured on a six-player world that was 55,503 of 57,126 bytes (97%), resent ~90% of ticks with a byte-identical 600-element array (median pellet-set churn was 0). A `food` message of `[[x, y], ...]` integer pairs is sent only when the id set changes, or to a socket whose `food_version` is behind. The version is recorded only after a successful send, so a raise that `_emit` swallows retries next tick, and because food is no longer in `state`, withholding a join-window frame cannot desync a client's pellets. Area-of-interest culling and protobuf stay deferred; a true per-pellet delta is a drop-in on the same message type.
+- **Food leaves the `state` broadcast.** Source plan section 4 puts a full food list in every `state`. Measured on a six-player world that was 55,503 of 57,126 bytes (97%), resent ~90% of ticks with a byte-identical 600-element array (median pellet-set churn was 0). A `food` message of `[[x, y], ...]` integer pairs is sent only when the id set changes, or to a socket whose `food_version` is behind. The payload is dumped once (`FoodStream.encoded`) and `_emit` sends that string to every behind socket; the version is recorded only after a successful send, so a raise that `_emit` swallows retries next tick, and because food is no longer in `state`, withholding a join-window frame cannot desync a client's pellets. Area-of-interest culling and protobuf stay deferred; a true per-pellet delta is a drop-in on the same message type.
+- **Feel-pass A6 eat grid.** `_eat_food` buckets pellets by `FOOD_GRID_CELL` and skips hypot tests outside each piece's padded sweep AABB. Iteration stays `world.food` dict order so eats remain seed-identical. One World scan, not a per-socket index. Needed so a ≥30-bot lobby can hold 30Hz at `FOOD_COUNT = 1800`.
 - **Food that spawns on a blob is eaten the same tick.** Spawn runs after the swept eat, so a pellet can appear inside a disc that did not move onto it. Left for the next tick it would render inside a body for a frame. `_refill_food` eats those at rest and respawns until the surviving pellets are uncovered.
 - **The arena rectangle, tick rate and spawn mass ride on `welcome` and every `state`.** Nothing used to carry the rectangle, so `WORLD` in `game.js` duplicated `WORLD_WIDTH` / `WORLD_HEIGHT` from `server/config.py`. Changing the config clamped the simulation to the new bounds while the client kept drawing the old border and grid — bodies sat outside the rectangle they were supposedly inside, which reads as a physics bug rather than a constant. The size is now `{width, height}` on `welcome` (so a join can fit-cam the real arena before its first snapshot) and on `state` (so a spectator, who never sends `join`, learns it too), along with `tickRate` (interpolation interval) and `initialPlayerMass` (follow-cam zoom baseline). The client no longer has a copy of the numbers.
 - **No JavaScript is under test.** Every other `[Agent]` box in this doc names a test that proves it. `client/game.js` is 350 lines of protocol handling — mode transitions, the follow-cam handoff after `welcome`, the food splice, input throttling — and none of it is proved by anything but the Phase 3 and 4 human checklists. Two source-grep tests were briefly added and removed: asserting that `"WebSocket"` and `"0.75"` appear in the served files proved nothing about behaviour while breaking on any rewording. The gap is real and tracked in [`feel-pass.md`](feel-pass.md) D, not papered over here.
@@ -326,14 +327,25 @@ Unset it (or restart without it) to judge the under-35 refusal at a depleted fra
 
 Goal: N Python bot clients playing autonomously.
 
-- [ ] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
-- [ ] **[Agent]** Decision loop: [`docs/bot-logic.md`](bot-logic.md). Four states (Graze / Hunt / Flee / Recover), limited vision, per-piece eat/threat classification. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the graze seed, not the product.
-- [ ] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world.
+- [x] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
+- [x] **[Agent]** Decision loop: [`docs/bot-logic.md`](bot-logic.md). Four states (Graze / Hunt / Flee / Recover), limited vision, per-piece eat/threat classification. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the graze seed, not the product.
+- [x] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world. Smoke only — not the load bar.
+- [x] **[Agent]** Run `python -m bots.simple_bot --count 30` against a local server. Confirm the tick loop still holds ~30Hz with that many players in the world (tick count vs wall-clock over ~30s, not a short burst). Server log lines `tick N players=P sockets=S hz=H`. Measured 2026-08-17: 30 sockets, ~30s, hz 29.5–30.3.
 - [ ] **[Human]** Play against them in a browser tab. Confirm bots don't deadlock, don't spin in place, and don't crash on player disconnect.
+
+### How to verify (Phase 6)
+
+```
+python -m server.main
+python -m bots.simple_bot --count 30
+```
+
+Open `http://localhost:8000`, Play. Watch the server log for `hz=` near 30 with `players=30`. Ctrl+C on the bot process exits 0.
 
 ### Phase 6 exit criteria
 
 - [ ] **[Human]** World feels alive with bots present. Bots survive server restarts (the client reconnects, or its process exits cleanly).
+- [ ] **[Human]** Stress test: join as a **freshly spawning** player into a lobby with **≥30 bots**. The world feels alive (bots moving, eating, hunting around you). Your own movement, eating, and the spawn-invuln window stay responsive — not hitching, not a frozen or empty-feeling map.
 
 ---
 

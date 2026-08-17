@@ -1,6 +1,7 @@
 """WebSocket round-trips against the aiohttp app."""
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -622,10 +623,14 @@ def test_a_failed_food_send_is_retried_without_advancing_the_cursor():
         class FakeWS:
             closed = False
 
-            async def send_json(self, payload: dict) -> None:
-                if payload.get("type") == "food" and attempts["n"] == 0:
+            async def send_str(self, payload: str) -> None:
+                data = json.loads(payload)
+                if data.get("type") == "food" and attempts["n"] == 0:
                     attempts["n"] += 1
                     raise ConnectionError("dropped")
+                sent.append(data)
+
+            async def send_json(self, payload: dict) -> None:
                 sent.append(payload)
 
         session.ws = FakeWS()

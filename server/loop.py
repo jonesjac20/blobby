@@ -86,6 +86,8 @@ async def tick_loop(
     interval = 1.0 / TICK_RATE
     last = clock()
     deadline = last + interval
+    tick_n = 0
+    hz_window = last
     while not stop.is_set():
         now = await sleep_until(deadline, clock=clock, sleep=sleep)
         if stop.is_set():
@@ -108,3 +110,17 @@ async def tick_loop(
             raise
         except Exception:
             log.exception("broadcast failed, skipping to the next tick")
+
+        tick_n += 1
+        if tick_n % TICK_RATE == 0:
+            wall = clock()
+            elapsed = wall - hz_window
+            hz = TICK_RATE / elapsed if elapsed > 0.0 else 0.0
+            log.info(
+                "tick %d players=%d sockets=%d hz=%.1f",
+                tick_n,
+                len(world.players),
+                len(sessions),
+                hz,
+            )
+            hz_window = wall

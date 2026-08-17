@@ -16,7 +16,17 @@
  */
 
 export function radiusForMass(mass) {
-  return Math.sqrt(Math.max(mass, 0) / Math.PI);
+  // Visual only — simulation.radius_for_mass is still sqrt(mass / π).
+  // Backdrop grid is 100 world units. Area scaling leaves mass 1000 inside
+  // one cell (~36 across). Anchor spawn, then grow so 1000 is several cells.
+  const m = Math.max(mass, 0);
+  const referenceMass = 50;
+  const spawnRadius = Math.sqrt(referenceMass / Math.PI);
+  const GRID = 100;
+  const radiusAt1000 = 2 * GRID; // diameter = 4 cells
+  const VISUAL_EXPONENT =
+    Math.log(radiusAt1000 / spawnRadius) / Math.log(1000 / referenceMass);
+  return spawnRadius * (m / referenceMass) ** VISUAL_EXPONENT;
 }
 
 export function playerMass(player) {
@@ -126,7 +136,10 @@ export function followCamera(camera, state, playerId, viewport, options = {}) {
   if (!centroid) return camera;
 
   const mass = Math.max(playerMass(player), referenceMass);
-  const span = baseSpan * Math.sqrt(mass / referenceMass);
+  // Zoom out slower than √mass so a growing blob still fills more of the
+  // screen. √mass cancelled area-based radius and made 100 vs 200 look alike.
+  const CAMERA_ZOOM_EXPONENT = 0.25;
+  const span = baseSpan * (mass / referenceMass) ** CAMERA_ZOOM_EXPONENT;
   const massScale = clamp(Math.min(viewport.width, viewport.height) / span, minScale, maxScale);
   const target = {
     x: centroid.x,

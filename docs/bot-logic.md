@@ -27,7 +27,11 @@ The server broadcasts the full world. Using that omniscience makes bots psychic.
 
 **Vision** is a circle around the mass-weighted centroid, sized like the follow-cam in [`client/render.js`](../client/render.js): `baseSpan = 420` at `INITIAL_PLAYER_MASS`, scaling with `sqrt(mass / 50)`. Starting **radius** is half that span (~210 at spawn), times personality `vision_scale`. A small hysteresis band (`VISION_EDGE_HYSTERESIS`) so entities do not flicker at the rim.
 
-Entities outside vision do not exist for Hunt or Graze. Flee uses the same radius — a giant across the map is not a threat.
+Vision culls **other players** for classification. Hunt never uses off-screen prey. Flee keeps a short **last-known threat point** after they leave the circle (`FLEE_MEMORY_SECONDS`); it must not refresh that point from an off-screen piece. Food is not fog-of-war — Graze sees pellets like the browser holding the latest `food` message.
+
+**Graze** picks the nearest pellet in the bot’s 100×100 cell and its 8 neighbors (a 3×3), with target hysteresis. Empty 3×3 → wander (wall-aware), never sit at `(0,0)` while a local pellet exists. The 100×100 grid is a **client-side targeting** index, rebuilt once per process when the food version changes. It is not the server eat scan.
+
+Entities outside vision do not exist for Hunt. Flee uses the same radius for *seeing* a threat — a giant across the map is not a threat — then may keep steering away from the last-seen point.
 
 ---
 
@@ -90,7 +94,7 @@ If none of those, do not enter Hunt; keep Grazing. Futile waddling at a fleeing 
 
 ### Graze
 
-Default. Pick a food target *inside vision* that is not the global nearest pellet: a local density peak, or a wander waypoint with a food bias, plus a wall-repulsion term. Hysteresis on the target so the input vector does not spin. Never sit at `(0, 0)` unless there is no food in vision (then wander). `input_toward_nearest_food` is the wrong graze — 1800 pellets and five bots all converge and orbit.
+Default. Greedy nearest pellet in the bot’s 100×100 cell **plus 8 neighbors**, with target hysteresis so the input does not flicker. Empty 3×3 → wander. Never sit at `(0, 0)` unless there is no local pellet (then wander). `input_toward_nearest_food` is the wrong graze — 1800 pellets and thirty bots all converge and orbit.
 
 During `SPAWN_INVULN_SECONDS`, Graze and get clear of anyone sitting on the spawn. A spawn-size split (`50 → 25`) is below `MIN_SPLIT_MASS` on the halves and cannot eat anything a fresh life would hunt; do not open with a lunge.
 
@@ -191,5 +195,4 @@ Short list so the socket half does not invent a second brain:
 
 - Pathfinding, viruses, mass eject (GUIDEBOOK deferred list).
 - Mixed-cluster snacking (stay in Flee).
-- Feel-pass **A6 food grid** — a *server* tick-budget fix to do before running 3–5 bots, not bot logic. Phase 6 implementation prerequisite.
 - `simple_bot.py` itself. This file is the spec that file will follow.
