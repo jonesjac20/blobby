@@ -166,7 +166,7 @@ def step(world: World, dt: float) -> None:
 
     _apply_input_and_move(world, previous_now, dt)
     _cluster_forces(world, previous_now, dt)
-    _resolve_collisions(world)
+    _resolve_collisions(world, previous_positions)
     _eat_food(world, previous_positions)
     _eat_other_players(world)
     _decay_split_kicks(world)
@@ -286,11 +286,18 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
             piece.y += dy / distance * move
 
 
-def _resolve_collisions(world: World) -> None:
+def _resolve_collisions(
+    world: World, previous_positions: dict[str, tuple[float, float]]
+) -> None:
     """Push overlapping bodies apart, then clamp every disc into the world.
 
     Position projection rather than impulses: it carries no dt, so a settled
     configuration is identical at every tick rate.
+
+    Solid pairs (neither can eat the other) cannot tunnel: if one tick of
+    travel swaps their sides, projection uses the start-of-tick axis rather
+    than the post-swap one. Edible pairs still skip projection so a predator
+    can sink to EAT_OVERLAP.
 
     The clamp insets each center by its radius, so a piece cannot sit with
     half its body hanging outside the arena. A piece crushed into a corner by
@@ -313,6 +320,7 @@ def _resolve_collisions(world: World) -> None:
                     if _merge_ready(world, a) and _merge_ready(world, b):
                         continue
                     target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
+                    _project_apart(a, b, target, j)
                 elif (_can_eat(a, b) and owner_b not in protected) or (
                     _can_eat(b, a) and owner_a not in protected
                 ):
@@ -323,11 +331,36 @@ def _resolve_collisions(world: World) -> None:
                     continue
                 else:
                     target = _distance_for_engulfment(a, b, 0.0)
-
-                _project_apart(a, b, target, j)
+                    _project_solid_apart(
+                        a,
+                        b,
+                        target,
+                        j,
+                        previous_positions.get(a.piece_id),
+                        previous_positions.get(b.piece_id),
+                    )
 
     for _, piece in bodies:
         piece.x, piece.y = clamp_body_position(piece.x, piece.y, piece.mass)
+
+
+def _place_apart_along(
+    a: Piece, b: Piece, target: float, ux: float, uy: float
+) -> None:
+    """Set centers so (b - a) = target * (ux, uy), preserving mass-weighted COM."""
+    total = a.mass + b.mass
+    if total <= 0.0:
+        a.x -= ux * target / 2.0
+        a.y -= uy * target / 2.0
+        b.x += ux * target / 2.0
+        b.y += uy * target / 2.0
+        return
+    cx = (a.x * a.mass + b.x * b.mass) / total
+    cy = (a.y * a.mass + b.y * b.mass) / total
+    a.x = cx - ux * target * (b.mass / total)
+    a.y = cy - uy * target * (b.mass / total)
+    b.x = cx + ux * target * (a.mass / total)
+    b.y = cy + uy * target * (a.mass / total)
 
 
 def _project_apart(a: Piece, b: Piece, target: float, fallback_index: int) -> None:
@@ -354,6 +387,39 @@ def _project_apart(a: Piece, b: Piece, target: float, fallback_index: int) -> No
     a.y -= uy * a_share
     b.x += ux * b_share
     b.y += uy * b_share
+
+
+def _project_solid_apart(
+    a: Piece,
+    b: Piece,
+    target: float,
+    fallback_index: int,
+    prev_a: tuple[float, float] | None,
+    prev_b: tuple[float, float] | None,
+) -> None:
+    """Solid (inedible) pair: no tunneling through in one tick of travel.
+
+    Food already sweeps the move segment; solid player pairs need the same idea.
+    If the relative-motion segment came within `target` of contact, or the pair
+    overlapped and flipped sides, restore along the start-of-tick axis. A hitch
+    (`MAX_TICK_SECONDS`) would otherwise shove them out the far side.
+    """
+    dx, dy = b.x - a.x, b.y - a.y
+    distance = math.hypot(dx, dy)
+
+    if prev_a is not None and prev_b is not None:
+        pdx = prev_b[0] - prev_a[0]
+        pdy = prev_b[1] - prev_a[1]
+        prev_dist = math.hypot(pdx, pdy)
+        if prev_dist > 0.0:
+            approach = _distance_point_to_segment(0.0, 0.0, pdx, pdy, dx, dy)
+            flipped = distance > 0.0 and (pdx * dx + pdy * dy) < 0.0
+            tunneled = approach <= target
+            if (distance < target or tunneled) and (flipped or tunneled):
+                _place_apart_along(a, b, target, pdx / prev_dist, pdy / prev_dist)
+                return
+
+    _project_apart(a, b, target, fallback_index)
 
 
 def _distance_point_to_segment(
