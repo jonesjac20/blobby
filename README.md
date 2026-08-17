@@ -10,6 +10,8 @@ Phase 3 is built: open `http://localhost:8000` for the canvas client (name, colo
 pip install -r requirements-dev.txt
 python -m pytest                 # simulation, protocol, and WebSocket tests
 python -m server.main            # game server: client at http://localhost:8000, WebSocket at /ws
+python -m bots.simple_bot --count 5
+python -m bots.simple_bot --count 30   # living-lobby stress; tick Hz is logged by the server
 python -m tools.probe_client --name A
 python -m server.demo            # Phase 1 console harness: two hardcoded players, no networking
 python -m tools.record --serve   # record every verification scenario and open the browser viewer

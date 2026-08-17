@@ -5,6 +5,7 @@ These names are bound by value at import into `server.world` and
 effect; patch `server.world.FOOD_COUNT`, or pass `World(food_target=...)`.
 """
 
+import math
 import os
 import time
 
@@ -44,11 +45,15 @@ NAME_MAX_LEN = 16
 DEFAULT_NAME = "blob"
 DEFAULT_COLOR = "#4fc3f7"
 
-WORLD_WIDTH = 1600
-WORLD_HEIGHT = 1600
+WORLD_WIDTH = 2000
+WORLD_HEIGHT = 2000
 
-FOOD_COUNT = 1800
-FOOD_MASS = 3
+FOOD_COUNT = 1600
+FOOD_MASS = 5
+# Cell size for the eat-scan skip-list (feel-pass A6). Pellets are bucketed once
+# per `_eat_food`; each piece queries a padded AABB and the scan still walks
+# `world.food` in dict order so eats stay seed-identical.
+FOOD_GRID_CELL = 50.0
 
 # Above MIN_SPLIT_MASS so a freshly spawned player can split without eating first.
 INITIAL_PLAYER_MASS = 50
@@ -64,17 +69,22 @@ SPAWN_INVULN_SECONDS = 5.0
 # move faster (`speed_for_mass`), so a split fragment can travel more than
 # its own radius in one tick. Food collection is a swept test along that
 # path, so pellets on the trajectory are still eaten.
-BASE_SPEED = 325
-# Initial magnitude of the velocity kick given to a freshly split piece. Total
-# kick displacement is SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2, so the
-# halves of a mass-100 blob pop about 30 units apart - several blob widths, and
-# unmistakable. The kick does not have to stay small to keep the halves in
-# contact; COHESION_SPEED below is what pulls them back.
-SPLIT_KICK_SPEED = 140
+BASE_SPEED = 200
+# Split-kick displacement as a multiple of the pre-split parent piece's radius.
+# Six radii at mass 100 is ~34 world units - several blob widths, the pop the
+# old flat kick was tuned for. Heavier parents lunge farther; a hard cap below
+# keeps a giant from crossing the map in one press.
+SPLIT_KICK_RADII = 6.0
+# Cap on kick displacement, as a fraction of the shorter arena axis. Derived at
+# call time from WORLD_WIDTH / WORLD_HEIGHT so resizing the rectangle moves it.
+SPLIT_KICK_MAX_ARENA_FRACTION = 0.15
 
 # Exponent of the agar.io-style speed falloff. Larger means heavier blobs slow
 # down more sharply.
-SPEED_FALLOFF = 0.7
+SPEED_FALLOFF = 0.5
+# Floor as a fraction of BASE_SPEED. Without it, (mass ** -SPEED_FALLOFF) goes
+# toward zero and a giant cannot cross the map.
+SPEED_FLOOR_FRACTION = 0.25
 
 # --- soft-body cluster and collision ---------------------------------------
 #
@@ -113,4 +123,22 @@ def speed_for_mass(mass: float) -> float:
     """Movement speed in world units per second for a piece of `mass`."""
     if mass <= 0:
         return BASE_SPEED
-    return BASE_SPEED * (INITIAL_PLAYER_MASS / mass) ** SPEED_FALLOFF
+    raw = BASE_SPEED * (INITIAL_PLAYER_MASS / mass) ** SPEED_FALLOFF
+    return max(raw, BASE_SPEED * SPEED_FLOOR_FRACTION)
+
+
+def split_kick_displacement_max() -> float:
+    """World-unit ceiling on split-kick travel. Grows and shrinks with the arena."""
+    return min(WORLD_WIDTH, WORLD_HEIGHT) * SPLIT_KICK_MAX_ARENA_FRACTION
+
+
+def split_kick_speed(mass: float) -> float:
+    """Initial kick magnitude so displacement is SPLIT_KICK_RADII parent radii, capped.
+
+    `mass` is the pre-split parent piece, not the half and not the player's
+    total. Linear decay over SPLIT_KICK_DECAY_SECONDS makes total displacement
+    `speed * decay / 2`, same integral as before; only the initial speed scales.
+    """
+    radius = math.sqrt(max(mass, 0.0) / math.pi)
+    displacement = min(SPLIT_KICK_RADII * radius, split_kick_displacement_max())
+    return displacement * 2.0 / SPLIT_KICK_DECAY_SECONDS

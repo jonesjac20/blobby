@@ -16,8 +16,8 @@ from server.config import (
     OWN_PIECE_OVERLAP,
     REMERGE_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
-    SPLIT_KICK_SPEED,
     TICK_RATE,
+    split_kick_speed,
     speed_for_mass,
 )
 from server.world import World
@@ -78,9 +78,9 @@ def test_split_kick_displacement_is_invariant_across_tick_rates():
         displacements.append(child.x - start)
 
     assert max(displacements) - min(displacements) < TOLERANCE
-    # Integral of a linear decay from SPLIT_KICK_SPEED to zero.
+    # Integral of a linear decay from split_kick_speed(parent) to zero.
     assert displacements[0] == pytest.approx(
-        SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2.0, abs=TOLERANCE
+        split_kick_speed(40) * SPLIT_KICK_DECAY_SECONDS / 2.0, abs=TOLERANCE
     )
 
 
@@ -94,7 +94,7 @@ def test_kick_reaches_exactly_zero_at_every_tick_rate():
         # Still decaying halfway through the window, at every tick rate.
         while world.now < SPLIT_KICK_DECAY_SECONDS / 2.0:
             simulation.step(world, dt)
-        assert 0.0 < child.vx < SPLIT_KICK_SPEED, f"unexpected mid-decay vx at dt={dt}"
+        assert 0.0 < child.vx < split_kick_speed(40), f"unexpected mid-decay vx at dt={dt}"
 
         while world.now < SPLIT_KICK_DECAY_SECONDS:
             simulation.step(world, dt)

@@ -24,7 +24,7 @@ Where a number appears below it was measured, not estimated. Re-measure before y
 
 Done before Phase 2: A1, A3, A4 (Phase 4 wording already matched), A5, A7 except hysteresis, plus the D/E items called out as done on those bullets.
 
-Still deferred: A2 (kick scale — after Phase 3), A6 (food grid — before Phase 6), A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot). E (requirements split) landed with aiohttp in Phase 2.
+Still deferred: A7 eat-ratio hysteresis (Phase 4), all of B, all of C, remaining D (compound-tick mass conservation, three-player eat ordering, 8-piece collapse, JS tests, loose tolerances, `advance()` overshoot). E (requirements split) landed with aiohttp in Phase 2. A2 (kick scale) landed before Phase 6 so large hunters keep a proportionate lunge. A6 (food grid) landed with Phase 6 so a ≥30-bot lobby can hold 30Hz.
 
 Changed by Phase 3: the viewer is being kept, so group B is live work rather than work on something about to be deleted — see the note at the head of B. B1 and B3 are no longer viewer-only: `drawFood` and `drawPieces` are now what the live client draws with too. A2's kick scale and the cluster values are finally judgeable on a screen, which was the whole reason for deferring them.
 
@@ -44,15 +44,15 @@ Options: lower `BASE_SPEED`, floor the falloff below spawn mass, or make food co
 
 **Acceptance:** a test that lays food along a piece's path and asserts every pellet is consumed, parametrized at mass 200, 40, 20 and 10. It should fail at mass 10 before your change.
 
-### A2. `SPLIT_KICK_SPEED` is absolute while resting distance grows as `sqrt(mass)`
+### A2. `SPLIT_KICK_SPEED` is absolute while resting distance grows as `sqrt(mass)` — **done**
 
-Total kick displacement is fixed at `120 * 0.5 / 2 = 30` units at every mass. Two halves of mass `m/2` rest `2 * sqrt(m / (2 * pi)) * (1 - OWN_PIECE_OVERLAP)` apart, which reaches 30 units at **m ≈ 1960**. Above that a split produces no visible separation at all — projection re-settles the halves the same tick. Well before that, at mass 500, the 30-unit pop is under 2.5 blob radii and reads as a twitch.
+Total kick displacement used to be fixed (the comment said `120 * 0.5 / 2 = 30` units; the constant later moved). Two halves of mass `m/2` rest `2 * sqrt(m / (2 * pi)) * (1 - OWN_PIECE_OVERLAP)` apart, which caught up with a 30-unit pop at **m ≈ 1960**. Above that a split produced no visible separation at all — projection re-settled the halves the same tick. Well before that, at mass 500, the pop was under 2.5 blob radii and read as a twitch.
 
-This matters more than it looks: because a predator at the 1.25x ratio moves at only 91.5% of its prey's speed (see A4), splitting to lunge is the *only* way to catch anything. This quietly removes the offensive mechanic from large players.
+This mattered more than it looked: because a predator at the 1.25x ratio is always slower than its prey (see A4), splitting to lunge is the *only* way to catch anything. A flat kick quietly removed the offensive mechanic from large players.
 
-Scale the kick with `radius_for_mass` so the pop stays proportionate.
+`split_kick_speed(mass)` now sets displacement to `SPLIT_KICK_RADII` times the pre-split parent radius, capped at `SPLIT_KICK_MAX_ARENA_FRACTION` of the shorter arena axis (`split_kick_displacement_max()`). The decay window is unchanged.
 
-**Acceptance:** a test asserting the halves of a mass-2000 blob end further apart than their resting distance. Defer the exact scaling constant until Phase 3.
+**Acceptance:** `test_a_heavy_split_pops_farther_apart_than_the_halves_rest` (mass 2000 exceeds resting distance), `test_split_kick_displacement_grows_with_parent_mass_below_the_cap`, `test_split_kick_displacement_is_capped_at_a_fraction_of_the_arena`.
 
 ### A3. Bounds are clamped on centers, not bodies — **done**
 
@@ -80,15 +80,13 @@ Sleep to a deadline: track the next tick's target time and sleep the remainder.
 
 **Acceptance:** over a 30s run, tick count is within 1% of `TICK_RATE * elapsed`. `tests/test_dt_invariance.py` must still pass.
 
-### A6. Food collision is O(pieces × FOOD_COUNT) and will bite in Phase 6
+### A6. Food collision is O(pieces × FOOD_COUNT) and will bite in Phase 6 — **done**
 
 With `FOOD_COUNT = 600`, one player at 8 pieces is 4,800 `math.hypot` calls per tick, which is fine. Ten players at 8 pieces is 48,000 distance tests per tick, 1.44M/sec at 30Hz — roughly half a core on food alone, before `_resolve_collisions` (which is `SEPARATION_PASSES * O(bodies²)`, or 4 × 3,160 pairs at 80 bodies).
 
-Phase 6 calls for 3–5 bots plus a human, so the tick budget starts overrunning exactly when bots land, and it will present as "bots feel laggy" rather than as an obvious error. A uniform grid bucketing food by cell makes this near-constant per piece.
+Live values are `FOOD_COUNT = 1800` and the Phase 6 exit bar is ≥30 bots, so the brute scan is not optional. `_eat_food` now buckets pellets on a `FOOD_GRID_CELL` grid and each piece queries a padded AABB of its sweep. **Iteration still walks `world.food` in dict order**, skipping non-candidates, so which pellet is eaten first (and mid-scan radius growth) stays seed-identical. The grid is one structure on the World scan, not per socket.
 
-Do this before Phase 6, not before Phase 2.
-
-**Acceptance:** a benchmark showing per-tick time roughly flat as player count goes 1 → 10, and identical simulation output for a fixed seed (the grid must not change behaviour).
+**Acceptance:** `test_food_grid_candidates_are_a_conservative_superset`, `test_food_grid_eats_a_pellet_in_a_neighbor_cell_on_the_path`, `test_world_is_deterministic_for_a_given_seed`. Existing eat tests still pass.
 
 ### A7. Small hardening in the simulation
 
@@ -164,7 +162,7 @@ Roughly 600 lines, with three specific problems:
 
 ### C2. Constants are inlined into `expect` prose inconsistently
 
-Some scenarios interpolate `SPLIT_KICK_SPEED`, `SPLIT_KICK_DECAY_SECONDS` and `FOOD_COUNT` via f-strings. Others hardcode: `world_bounds` says "1200", `remerge` says "t=13s, exactly 12s later", `exponential_split` says "8 piece cap". Change `REMERGE_SECONDS` to 10 and the `remerge` expectation tells the verifier to watch the wrong moment.
+Some scenarios interpolate `split_kick_speed`, `SPLIT_KICK_DECAY_SECONDS` and `FOOD_COUNT` via f-strings. Others hardcode: `world_bounds` says "1200", `remerge` says "t=13s, exactly 12s later", `exponential_split` says "8 piece cap". Change `REMERGE_SECONDS` to 10 and the `remerge` expectation tells the verifier to watch the wrong moment.
 
 The staged coordinates have the same problem — literals like `320`/`880` and `380`/`580`/`820` silently assume a 1200×1200 world. Derive them from `WORLD_WIDTH`/`CENTER` the way `_view_around` already does.
 

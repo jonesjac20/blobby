@@ -21,7 +21,8 @@ Verification boxes are tagged the same way. An `[Agent]` verify box means there 
 The source plan is the authority on scope. Where this build adds to it, it is recorded here instead of being blended in silently.
 
 - **Phase 1 soft-body cluster physics.** Source section 5 specifies the eat ratio and the split/remerge rules and nothing else; section 3 asks only for "run collisions". Cohesion, the merge pull, mass-weighted position projection and the three engulfment thresholds are all additions. They exist so a multi-piece player reads as one body rather than a pile of circles. Their values are *provisional*: every one is a feel parameter, and feel cannot be judged until Phase 3 puts it on a screen.
-- **Split is exponential.** Source section 5 says "piece becomes two pieces of half mass", singular. One press here splits every eligible piece, as agar.io does.
+- **Split kick scales with parent radius.** Source section 5 says only that the new piece gets a velocity kick that decays over ~0.5s. A flat speed made large splits a twitch — resting distance grows as `sqrt(mass)` while travel stayed fixed (feel-pass A2). Displacement is now `SPLIT_KICK_RADII` times the pre-split parent piece's radius, capped at `SPLIT_KICK_MAX_ARENA_FRACTION` of the shorter arena axis so a giant cannot lunge across the map. Only the new piece is kicked; the parent stays at half mass with its kick cleared.
+- **Bot brain exceeds source plan §7.** Section 7 is “nearest edible, flee if a larger player is closer.” That loop deadlocks, never catches a competent player, and suicide-splits. Phase 6 follows [`bot-logic.md`](bot-logic.md): four states (Graze / Hunt / Flee / Recover), limited vision, per-piece classification. The file is the spec; `bots/simple_bot.py` is still the Phase 6 implementation.
 - **`REMERGE_SECONDS = 12`** is a pick from the source plan's "flat 10–15s" range, not a value the plan states.
 - **A simulation clock.** The source plan never says where "now" comes from. See [Simulation clock](#simulation-clock).
 - **Verification tooling.** `tests/`, `tools/` and the browser viewer are not in the source plan. See [Verification tooling](#verification-tooling-phase-1).
@@ -34,7 +35,8 @@ The source plan is the authority on scope. Where this build adds to it, it is re
 - **`peak_mass` is observed mid-tick.** `update_and_eliminate` runs after `simulation.step`, by which point a player killed this tick has no pieces left to measure. `simulation` records `Player.last_total_mass` just before eaten pieces are culled, so mass picked up on the tick that killed you — a pellet, or a fragment of the blob that then ate you — still reaches Game Over.
 - **A failed tick is logged, not fatal.** The tick loop catches exceptions from `process_tick` and from the broadcast and continues. Without it, one throw cancels the task and leaves the HTTP and WebSocket endpoints answering normally over a world that has silently stopped, which reads as a network fault. A throw partway through `step` can leave the world half-mutated; for a POC a visible traceback and a resumed loop beats a frozen one.
 - **An explicit `/` route, and a file whitelist.** `add_static("/", CLIENT_DIR)` maps paths to files and refuses a directory-root request, so `/` returned 403, `/index.html` 404 (no such file yet), and `/viewer.html` plus `/recordings/index.json` 200. Phase 3 serves `index.html` at `/` and only `index.html`, `game.js`, `render.js` and `style.css` under `/{name}`. The Phase 1 viewer stays a regression harness, reachable via `python -m tools.record --serve` on 8080, and is not on the game port — the same decision Phase 7 requires once this process faces the internet.
-- **Food leaves the `state` broadcast.** Source plan section 4 puts a full food list in every `state`. Measured on a six-player world that was 55,503 of 57,126 bytes (97%), resent ~90% of ticks with a byte-identical 600-element array (median pellet-set churn was 0). A `food` message of `[[x, y], ...]` integer pairs is sent only when the id set changes, or to a socket whose `food_version` is behind. The version is recorded only after a successful send, so a raise that `_emit` swallows retries next tick, and because food is no longer in `state`, withholding a join-window frame cannot desync a client's pellets. Area-of-interest culling and protobuf stay deferred; a true per-pellet delta is a drop-in on the same message type.
+- **Food leaves the `state` broadcast.** Source plan section 4 puts a full food list in every `state`. Measured on a six-player world that was 55,503 of 57,126 bytes (97%), resent ~90% of ticks with a byte-identical 600-element array (median pellet-set churn was 0). A `food` message of `[[x, y], ...]` integer pairs is sent only when the id set changes, or to a socket whose `food_version` is behind. The payload is dumped once (`FoodStream.encoded`) and `_emit` sends that string to every behind socket; the version is recorded only after a successful send, so a raise that `_emit` swallows retries next tick, and because food is no longer in `state`, withholding a join-window frame cannot desync a client's pellets. Area-of-interest culling and protobuf stay deferred; a true per-pellet delta is a drop-in on the same message type.
+- **Feel-pass A6 eat grid.** `_eat_food` buckets pellets by `FOOD_GRID_CELL` and skips hypot tests outside each piece's padded sweep AABB. Iteration stays `world.food` dict order so eats remain seed-identical. One World scan, not a per-socket index. Needed so a ≥30-bot lobby can hold 30Hz at `FOOD_COUNT = 1800`.
 - **Food that spawns on a blob is eaten the same tick.** Spawn runs after the swept eat, so a pellet can appear inside a disc that did not move onto it. Left for the next tick it would render inside a body for a frame. `_refill_food` eats those at rest and respawns until the surviving pellets are uncovered.
 - **The arena rectangle, tick rate and spawn mass ride on `welcome` and every `state`.** Nothing used to carry the rectangle, so `WORLD` in `game.js` duplicated `WORLD_WIDTH` / `WORLD_HEIGHT` from `server/config.py`. Changing the config clamped the simulation to the new bounds while the client kept drawing the old border and grid — bodies sat outside the rectangle they were supposedly inside, which reads as a physics bug rather than a constant. The size is now `{width, height}` on `welcome` (so a join can fit-cam the real arena before its first snapshot) and on `state` (so a spectator, who never sends `join`, learns it too), along with `tickRate` (interpolation interval) and `initialPlayerMass` (follow-cam zoom baseline). The client no longer has a copy of the numbers.
 - **No JavaScript is under test.** Every other `[Agent]` box in this doc names a test that proves it. `client/game.js` is 350 lines of protocol handling — mode transitions, the follow-cam handoff after `welcome`, the food splice, input throttling — and none of it is proved by anything but the Phase 3 and 4 human checklists. Two source-grep tests were briefly added and removed: asserting that `"WebSocket"` and `"0.75"` appear in the served files proved nothing about behaviour while breaking on any rewording. The gap is real and tracked in [`feel-pass.md`](feel-pass.md) D, not papered over here.
@@ -77,7 +79,7 @@ Because the clock lives on the world rather than in a module global, a scenario 
   - **From source plan section 5:** `TICK_RATE = 30`, `MIN_SPLIT_MASS = 35`, `MAX_PIECES = 8`, `EAT_RATIO = 1.25`, `SPLIT_KICK_DECAY_SECONDS = 0.5`. Plus `REMERGE_SECONDS = 12`, our pick from the plan's 10–15s range.
   - **Clock:** `SIMULATION_CLOCK_SOURCE` (monotonic) and `MAX_TICK_SECONDS`, per the section above.
   - **World:** `WORLD_WIDTH`, `WORLD_HEIGHT`, `FOOD_COUNT`, `FOOD_MASS`, `INITIAL_PLAYER_MASS` (above `MIN_SPLIT_MASS`, so a fresh player can split without eating first). Plus `SPAWN_INVULN_SECONDS` (addition — see Divergence), added in Phase 2 when `join` started choosing spawn points.
-  - **Movement:** `BASE_SPEED`, `SPEED_FALLOFF` and `speed_for_mass(mass)` — agar.io style, speed decreasing as mass grows. `SPLIT_KICK_SPEED`, whose total displacement is `SPLIT_KICK_SPEED * SPLIT_KICK_DECAY_SECONDS / 2`.
+  - **Movement:** `BASE_SPEED`, `SPEED_FALLOFF` and `speed_for_mass(mass)` — agar.io style, speed decreasing as mass grows. `split_kick_speed(mass)` — displacement is `SPLIT_KICK_RADII` parent radii, capped at `split_kick_displacement_max()` (`SPLIT_KICK_MAX_ARENA_FRACTION` of the shorter arena axis). The decay window is still `SPLIT_KICK_DECAY_SECONDS`; only the initial magnitude scales.
   - **Cluster and collision** (additions — see Divergence): `OWN_PIECE_OVERLAP` < `EAT_OVERLAP` < `MERGE_OVERLAP`, all thresholds on engulfment depth, where 0.0 is circles just touching and 1.0 is the smaller fully inside the larger. The ordering is the design: pieces rest in contact, and eating or merging demands real penetration past that resting depth. `OWN_PIECE_OVERLAP < MERGE_OVERLAP` in particular, or the merge pull has no distance to cover and a merge becomes a snap. Plus `COHESION_SPEED`, `MERGE_PULL_SPEED`, `MERGE_RECALL`, `SEPARATION_PASSES`.
 - [x] **[Agent]** `server/models.py` — dataclasses only, no behavior: `Piece(piece_id, x, y, mass, vx, vy, initial_kick_vx, initial_kick_vy, split_time)` where `split_time` gates remerge, `initial_kick_vx/vy` hold the split kick that motion integrates, and `vx/vy` are recomputed from it each tick so the wire and the debug overlays have a current velocity to read; `Player(id, name, pieces, last_input, color, spawn_time, last_total_mass)`, where the last three arrived in Phase 2: `color` rides the wire, `spawn_time` gates spawn invulnerability, and `last_total_mass` is the mid-tick high-water mark `peak_mass` reads (see Divergence for both); `Food(id, x, y)`.
 - [x] **[Agent]** `server/world.py` — `World` holds `players` and `food` dicts, plus `now` (the simulation clock), a seeded `rng` and an optional `food_target`. Methods `spawn_player`, `spawn_food_to_target_count`, `remove_player`, `new_id`. IDs are uuid4-shaped but drawn from the world's seeded RNG, so a given seed replays exactly; `uuid.uuid4()` directly would not. Phase 2 made `spawn_player`'s `x`/`y` optional — omitted, they come from the world RNG and are clamped into the rectangle — and gave it a `color`.
@@ -153,7 +155,7 @@ python -m server.demo
 Watch for ~18 seconds. This confirms nothing crashes over a sustained run:
 
 - A's total mass climbs as it eats; `food=` holds at `FOOD_COUNT`.
-- Around t = 3s A goes from one piece to two. The `at=` field then shows the halves ~36 units apart at their furthest — 30 of that is the kick's own displacement, the rest is the shove that unstacks them — closing back to resting contact over the following second. The peak lasts a single tick and prints are a second apart, so expect to see something in the twenties rather than the peak itself.
+- Around t = 3s A goes from one piece to two. The `at=` field then shows the halves tens of units apart at their furthest — `SPLIT_KICK_RADII` parent radii of kick (~48 at `DEMO_MASS` 200), the rest is the shove that unstacks them — closing back to resting contact over the following second. The peak lasts a single tick and prints are a second apart, so expect to see something in the forties rather than the peak itself.
 - Around t = 15.5s the pair merges back into one: 12s of remerge timer from the t = 3s split, plus ~0.4s for the merge pull to drag them from resting overlap down to `MERGE_OVERLAP`.
 
 This run deliberately keeps A and B about 600 units apart, so it says **nothing** about the eat ratio, solid collision, or either split refusal. Those are layers 1 and 2.
@@ -297,13 +299,13 @@ Unset the env var (or restart the server without it) when you are done — defau
 Goal: spacebar splits, following the section 5 rules verified in Phase 1.
 
 - [x] **[Agent]** `game.js`: spacebar sends `{"type": "split"}`.
-- [ ] **[Human]** Grow a blob above `MIN_SPLIT_MASS` (35), press space, confirm you see two pieces flying apart.
-- [ ] **[Human]** Confirm split is refused (nothing happens) when under 35 mass.
-- [ ] **[Human]** Confirm split is refused when already at 8 pieces.
-- [ ] **[Human]** Confirm the split kick visually decays over ~0.5s.
-- [ ] **[Human]** Press space repeatedly and confirm the whole cluster halves each time (1 → 2 → 4 → 8), not just one piece.
-- [ ] **[Human]** Wait ~12s and confirm pieces remerge.
-- [ ] **[Human]** With two tabs open: split, then eat a smaller player's piece with the split fragment. Confirm the ratio rule still applies.
+- [x] **[Human]** Grow a blob above `MIN_SPLIT_MASS` (35), press space, confirm you see two pieces flying apart.
+- [x] **[Human]** Confirm split is refused (nothing happens) when under 35 mass.
+- [x] **[Human]** Confirm split is refused when already at 8 pieces.
+- [x] **[Human]** Confirm the split kick visually decays over ~0.5s.
+- [x] **[Human]** Press space repeatedly and confirm the whole cluster halves each time (1 → 2 → 4 → 8), not just one piece.
+- [x] **[Human]** Wait ~12s and confirm pieces remerge.
+- [x] **[Human]** With two tabs open: split, then eat a smaller player's piece with the split fragment. Confirm the ratio rule still applies.
 
 ### How to verify (Phase 5)
 
@@ -317,7 +319,7 @@ Unset it (or restart without it) to judge the under-35 refusal at a depleted fra
 
 ### Phase 5 exit criteria
 
-- [ ] **[Human]** Splitting feels responsive and matches the rules from source plan section 5.
+- [x] **[Human]** Splitting feels responsive and matches the rules from source plan section 5.
 
 ---
 
@@ -325,14 +327,25 @@ Unset it (or restart without it) to judge the under-35 refusal at a depleted fra
 
 Goal: N Python bot clients playing autonomously.
 
-- [ ] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
-- [ ] **[Agent]** Decision loop: from the most recent received state, move toward the nearest edible entity (food or a smaller player); flee if a larger player is closer than the nearest edible target. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the seed of this.
-- [ ] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world.
+- [x] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
+- [x] **[Agent]** Decision loop: [`docs/bot-logic.md`](bot-logic.md). Four states (Graze / Hunt / Flee / Recover), limited vision, per-piece eat/threat classification. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the graze seed, not the product.
+- [x] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world. Smoke only — not the load bar.
+- [x] **[Agent]** Run `python -m bots.simple_bot --count 30` against a local server. Confirm the tick loop still holds ~30Hz with that many players in the world (tick count vs wall-clock over ~30s, not a short burst). Server log lines `tick N players=P sockets=S hz=H`. Measured 2026-08-17: 30 sockets, ~30s, hz 29.5–30.3.
 - [ ] **[Human]** Play against them in a browser tab. Confirm bots don't deadlock, don't spin in place, and don't crash on player disconnect.
+
+### How to verify (Phase 6)
+
+```
+python -m server.main
+python -m bots.simple_bot --count 30
+```
+
+Open `http://localhost:8000`, Play. Watch the server log for `hz=` near 30 with `players=30`. Ctrl+C on the bot process exits 0.
 
 ### Phase 6 exit criteria
 
 - [ ] **[Human]** World feels alive with bots present. Bots survive server restarts (the client reconnects, or its process exits cleanly).
+- [ ] **[Human]** Stress test: join as a **freshly spawning** player into a lobby with **≥30 bots**. The world feels alive (bots moving, eating, hunting around you). Your own movement, eating, and the spawn-invuln window stay responsive — not hitching, not a frozen or empty-feeling map.
 
 ---
 

@@ -20,6 +20,7 @@ from server.config import (
     EAT_OVERLAP,
     EAT_RATIO,
     FOOD_COUNT,
+    FOOD_GRID_CELL,
     FOOD_MASS,
     MAX_PIECES,
     MERGE_OVERLAP,
@@ -31,7 +32,7 @@ from server.config import (
     SEPARATION_PASSES,
     SPAWN_INVULN_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
-    SPLIT_KICK_SPEED,
+    split_kick_speed,
     speed_for_mass,
 )
 from server.models import Piece, Player
@@ -368,6 +369,47 @@ def _distance_point_to_segment(
     return math.hypot(px - (ax + t * abx), py - (ay + t * aby))
 
 
+def _food_grid(world: World) -> dict[tuple[int, int], list[str]]:
+    """Bucket pellet ids by cell. Rebuilt each `_eat_food`; not stored on World."""
+    grid: dict[tuple[int, int], list[str]] = {}
+    cell = FOOD_GRID_CELL
+    for food in world.food.values():
+        key = (int(math.floor(food.x / cell)), int(math.floor(food.y / cell)))
+        grid.setdefault(key, []).append(food.id)
+    return grid
+
+
+def _candidate_food_ids(
+    grid: dict[tuple[int, int], list[str]],
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    radius: float,
+) -> set[str]:
+    """Ids in cells overlapping the sweep's AABB dilated by `radius`.
+
+    Conservative: the AABB of a capsule, not the capsule. A true hit is always
+    inside; far pellets are skipped. Negative cell indices at the origin are fine.
+    """
+    cell = FOOD_GRID_CELL
+    min_x = min(ax, bx) - radius
+    max_x = max(ax, bx) + radius
+    min_y = min(ay, by) - radius
+    max_y = max(ay, by) + radius
+    x0 = int(math.floor(min_x / cell))
+    x1 = int(math.floor(max_x / cell))
+    y0 = int(math.floor(min_y / cell))
+    y1 = int(math.floor(max_y / cell))
+    ids: set[str] = set()
+    for gx in range(x0, x1 + 1):
+        for gy in range(y0, y1 + 1):
+            bucket = grid.get((gx, gy))
+            if bucket:
+                ids.update(bucket)
+    return ids
+
+
 def _eat_food(
     world: World, previous_positions: dict[str, tuple[float, float]]
 ) -> None:
@@ -377,14 +419,26 @@ def _eat_food(
     sampling only the post-move center would skip food sitting on the path.
     The segment is start-of-tick to post-clamp; a stationary piece degenerates
     to the original point test.
+
+    Feel-pass A6: a uniform grid is a skip-list only. Iteration stays
+    `world.food` dict order so which pellet is eaten first (and mid-scan radius
+    growth) is seed-identical to a full scan.
     """
+    if not world.food:
+        return
+    grid = _food_grid(world)
     eaten: set[str] = set()
     for player in world.players.values():
         for piece in player.pieces:
             radius = radius_for_mass(piece.mass)
             start = previous_positions.get(piece.piece_id, (piece.x, piece.y))
+            candidates = _candidate_food_ids(
+                grid, start[0], start[1], piece.x, piece.y, radius
+            )
+            if not candidates:
+                continue
             for food in world.food.values():
-                if food.id in eaten:
+                if food.id in eaten or food.id not in candidates:
                     continue
                 if (
                     _distance_point_to_segment(
@@ -393,7 +447,12 @@ def _eat_food(
                     <= radius
                 ):
                     piece.mass += FOOD_MASS
-                    radius = radius_for_mass(piece.mass)
+                    grown = radius_for_mass(piece.mass)
+                    if grown > radius:
+                        candidates = _candidate_food_ids(
+                            grid, start[0], start[1], piece.x, piece.y, grown
+                        )
+                    radius = grown
                     eaten.add(food.id)
     for food_id in eaten:
         del world.food[food_id]
@@ -527,7 +586,8 @@ def try_split(world: World, player: Player) -> int:
         if parent.mass < MIN_SPLIT_MASS:
             continue
 
-        half = parent.mass / 2.0
+        parent_mass = parent.mass
+        half = parent_mass / 2.0
         parent.mass = half
         parent.split_time = world.now
         # A leftover kick from an earlier split would be revived by the
@@ -535,16 +595,17 @@ def try_split(world: World, player: Player) -> int:
         parent.vx = parent.vy = 0.0
         parent.initial_kick_vx = parent.initial_kick_vy = 0.0
 
+        kick = split_kick_speed(parent_mass)
         player.pieces.append(
             Piece(
                 piece_id=world.new_id(),
                 x=parent.x,
                 y=parent.y,
                 mass=half,
-                vx=SPLIT_KICK_SPEED * unit_x,
-                vy=SPLIT_KICK_SPEED * unit_y,
-                initial_kick_vx=SPLIT_KICK_SPEED * unit_x,
-                initial_kick_vy=SPLIT_KICK_SPEED * unit_y,
+                vx=kick * unit_x,
+                vy=kick * unit_y,
+                initial_kick_vx=kick * unit_x,
+                initial_kick_vy=kick * unit_y,
                 split_time=world.now,
             )
         )

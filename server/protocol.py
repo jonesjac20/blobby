@@ -57,13 +57,16 @@ class FoodStream:
     every change. The payload is bare `[x, y]` integer pairs — food has no
     radius in the simulation, so a half-unit shift is sub-pixel at play zoom,
     and dropping the 32-hex ids is what makes the message small enough to send
-    at all. A later per-pellet delta is a drop-in on this same message type.
+    at all. `encoded` is that payload dumped once; `_emit` sends the string to
+    every behind socket rather than `json.dumps` per socket. A later per-pellet
+    delta is a drop-in on this same message type.
     """
 
     def __init__(self) -> None:
         self.version = 0
         self._ids: frozenset[str] = frozenset()
         self.payload: dict = {"type": "food", "version": 0, "food": []}
+        self.encoded: str = json.dumps(self.payload)
 
     def refresh(self, world: World) -> None:
         current = frozenset(world.food)
@@ -76,6 +79,7 @@ class FoodStream:
             "version": self.version,
             "food": [[round(f.x), round(f.y)] for f in world.food.values()],
         }
+        self.encoded = json.dumps(self.payload)
 
 
 def normalize_name(value: object) -> str:
