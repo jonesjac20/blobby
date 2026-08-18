@@ -1,6 +1,6 @@
 # blobby
 
-An agar.io-style multiplayer game. Authoritative Python server, browser + Python-bot clients, WebSocket/JSON protocol. Runs as a POC on a local Ubuntu VM.
+An agar.io-style multiplayer game. Authoritative Python server, browser + Python-bot clients, WebSocket/JSON protocol. Runs on an Ubuntu server (VM).
 
 Phase 3 is built: open `http://localhost:8000` for the canvas client (name, color, Play / Spectate). A second tab is Phase 4. Everything the project intends to do, along with a phased checklist and where things currently stand, lives in [docs/GUIDEBOOK.md](docs/GUIDEBOOK.md).
 
