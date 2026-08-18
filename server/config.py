@@ -40,6 +40,10 @@ MAX_TICK_SECONDS = 0.25
 # indistinguishable from a bad port forward.
 HOST = os.environ.get("BLOBBY_HOST", "0.0.0.0")
 PORT = int(os.environ.get("BLOBBY_PORT", "8000"))
+# /healthz is 200 only while a successful process_tick is this fresh.
+# HTTP and /ws still answer if the loop has died; this is what CD fails on.
+# ~60 missed 30Hz ticks. Container boot is the deploy job's retry loop.
+HEALTHZ_STALE_AFTER_SECONDS = 2.0
 
 NAME_MAX_LEN = 16
 DEFAULT_NAME = "blob"

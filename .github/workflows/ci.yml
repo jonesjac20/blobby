@@ -42,3 +42,10 @@ jobs:
           docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
+
+  # Self-hosted on the production EC2 once Phase 11 has registered a runner.
+  # Skipped on PRs: `build` is skipped off main, and a skipped `needs` skips this.
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml

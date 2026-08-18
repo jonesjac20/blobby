@@ -1,4 +1,4 @@
-"""aiohttp game server: game files at `/`, WebSocket at `/ws`, tick loop.
+"""aiohttp game server: game files at `/`, WebSocket at `/ws`, `/healthz`.
 
 Bind address is BLOBBY_HOST / BLOBBY_PORT (default 0.0.0.0:8000). The Phase 1
 console harness lives in server.demo. The verification viewer is not served
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from server.config import HOST, PORT
+from server.config import HEALTHZ_STALE_AFTER_SECONDS, HOST, PORT, SIMULATION_CLOCK_SOURCE
 from server.loop import process_tick, tick_loop
 from server.protocol import ClientSession, FoodStream, handle_message, parse_client_message
 from server.world import World
@@ -34,6 +34,18 @@ SESSIONS_KEY = web.AppKey("sessions", list)
 FOOD_KEY = web.AppKey("food_stream", FoodStream)
 STOP_KEY = web.AppKey("stop_ticks", asyncio.Event)
 TASK_KEY = web.AppKey("tick_task", asyncio.Task)
+
+
+class TickStamp:
+    """Last successful process_tick. Mutate `.at`; do not replace the AppKey."""
+
+    __slots__ = ("at",)
+
+    def __init__(self) -> None:
+        self.at: float | None = None
+
+
+LAST_TICK_KEY = web.AppKey("last_tick", TickStamp)
 
 
 def _state_is_stale_for(session: ClientSession, payload: dict) -> bool:
@@ -101,9 +113,15 @@ async def broadcast(
     await _emit(app[SESSIONS_KEY], payload, deaths, stream)
 
 
+def mark_tick_ok(app: web.Application) -> None:
+    """Stamp a successful process_tick. Failed ticks must not call this."""
+    app[LAST_TICK_KEY].at = SIMULATION_CLOCK_SOURCE()
+
+
 async def emit_tick(app: web.Application, dt: float) -> None:
     """Drive one tick and broadcast. Tests use this instead of the wall clock."""
     payload, deaths = process_tick(app[WORLD_KEY], app[SESSIONS_KEY], dt)
+    mark_tick_ok(app)
     await broadcast(app, payload, deaths)
 
 
@@ -117,6 +135,20 @@ def _who(session: ClientSession) -> str:
     if session.name:
         return f"menu {session.name!r}"
     return "spectator"
+
+
+async def healthz(request: web.Request) -> web.Response:
+    """200 if the last successful tick is recent, 503 otherwise.
+
+    A frozen tick loop still serves `/` and `/ws`. Deploy curls this so a
+    dead world fails the job. Must be registered before `/{name}`.
+    """
+    last = request.app[LAST_TICK_KEY].at
+    if last is None:
+        return web.Response(status=503)
+    if SIMULATION_CLOCK_SOURCE() - last > HEALTHZ_STALE_AFTER_SECONDS:
+        return web.Response(status=503)
+    return web.Response(status=200)
 
 
 async def index(_request: web.Request) -> web.FileResponse:
@@ -189,7 +221,9 @@ def create_app(
     app[WORLD_KEY] = world
     app[SESSIONS_KEY] = []
     app[FOOD_KEY] = FoodStream()
+    app[LAST_TICK_KEY] = TickStamp()
     app.router.add_get("/ws", websocket_handler)
+    app.router.add_get("/healthz", healthz)
     app.router.add_get("/", index)
     app.router.add_get("/{name}", client_file)
 
@@ -207,7 +241,13 @@ async def _start_ticks(app: web.Application) -> None:
         await broadcast(app, payload, deaths)
 
     app[TASK_KEY] = asyncio.create_task(
-        tick_loop(app[WORLD_KEY], app[SESSIONS_KEY], emit=emit, stop=stop)
+        tick_loop(
+            app[WORLD_KEY],
+            app[SESSIONS_KEY],
+            emit=emit,
+            stop=stop,
+            on_tick_ok=lambda: mark_tick_ok(app),
+        )
     )
 
 

@@ -73,6 +73,7 @@ async def tick_loop(
     stop: asyncio.Event,
     clock=SIMULATION_CLOCK_SOURCE,
     sleep=asyncio.sleep,
+    on_tick_ok: Callable[[], None] | None = None,
 ) -> None:
     """Sleep to a 1/TICK_RATE deadline, step, then emit. Slips on overrun.
 
@@ -81,7 +82,8 @@ async def tick_loop(
     while the world silently stopped moving, which looks like a network fault
     and is far harder to diagnose than a traceback in the log. A throw partway
     through `step` can leave the world half-mutated; for a POC that is the
-    better trade.
+    better trade. `on_tick_ok` runs only after process_tick succeeds, so
+    /healthz can age out without treating a failed tick as a heartbeat.
     """
     interval = 1.0 / TICK_RATE
     last = clock()
@@ -102,6 +104,9 @@ async def tick_loop(
             log.exception("tick failed, skipping to the next one")
             deadline = next_deadline(deadline, clock(), interval)
             continue
+
+        if on_tick_ok is not None:
+            on_tick_ok()
 
         deadline = next_deadline(deadline, clock(), interval)
         try:
