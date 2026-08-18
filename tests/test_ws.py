@@ -593,6 +593,7 @@ def test_a_failed_tick_does_not_refresh_healthz(monkeypatch):
             else:
                 raise AssertionError("expected process_tick to fail")
             assert app[LAST_TICK_KEY].at == stamped
+            # Stamp is still fresh; 503 is the age-out test, not this one.
             assert (await client.get("/healthz")).status == 200
 
     asyncio.run(body())

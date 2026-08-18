@@ -45,7 +45,7 @@ if [[ ! -f "${RUNNER_DIR}/.runner" ]]; then
 fi
 
 cd "${RUNNER_DIR}"
-bash ./svc.sh install
+bash ./svc.sh install "${REAL_USER}"
 bash ./svc.sh start
 
 echo

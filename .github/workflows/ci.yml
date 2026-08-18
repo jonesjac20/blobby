@@ -6,6 +6,12 @@ on:
   push:
   pull_request:
 
+# One build+deploy on main at a time. Two parallel `latest` pushes can
+# otherwise let the slower (older) SHA win and roll production back.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest

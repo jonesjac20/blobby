@@ -28,6 +28,7 @@ pip install -r requirements.txt
 ## Layout
 
 - `docs/` — the build guidebook and the source build plan it follows.
+- `infra/prod/` — Phase 11 Terraform for the production EC2 (Docker via user_data, Elastic IP).
 - `server/` — Python game server. `main.py` is the aiohttp process, `protocol.py` the wire format and session state, `loop.py` the tick clock, `demo.py` the Phase 1 printout. `simulation.py` and `world.py` are Phase 1's, extended in Phase 2 for player color, RNG spawn points and spawn invulnerability.
 - `client/` — browser code. `index.html` + `game.js` is the live client at `/`. `render.js` and `style.css` are shared with the Phase 1 verification viewer, which is served only by `python -m tools.record --serve`.
 - `tools/` — the scenario recorder, plus `probe_client.py` for Phase 2 protocol checks.

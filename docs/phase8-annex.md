@@ -60,10 +60,10 @@ Do not register a production runner on the home VirtualBox VM. That box is not t
 
 `/healthz` is specified in Phase 13. Implement **only that route** here so the deploy job can fail closed (200 if the last successful tick is recent, 503 otherwise). JSON logs, `/metrics`, Prometheus stay Phase 13.
 
-- [x] **[Agent]** Add `.github/workflows/deploy.yml`: `runs-on: self-hosted`, `needs: build`, triggered on push to `main`. Steps: `docker compose pull`, `docker compose up -d`, curl `http://127.0.0.1:8000/healthz`, fail the job if it doesn't return 200 within a few seconds.
+- [x] **[Agent]** Add `.github/workflows/deploy.yml`: `runs-on: [self-hosted, linux, blobby-prod]`, `needs: build`, triggered on push to `main`. Steps: `docker compose pull` of the git SHA (`BLOBBY_IMAGE_TAG`), `docker compose up -d --force-recreate`, curl `http://127.0.0.1:8000/healthz` with a per-request timeout, fail the job if it doesn't return 200 within a few seconds.
 - [x] **[Agent]** Add `/healthz` to [`server/main.py`](../server/main.py): register it **before** `/{name}`, or the whitelist 404s it. 200 if the tick loop's last successful tick was recent, 503 otherwise. Tests for 503 before any tick, 200 after a tick, 503 when the stamp is aged out.
 - [x] **[Agent]** Install-helper script for the runner as a systemd service (the runner installer ships `svc.sh` for this).
-- [ ] **[Human]** After Phase 11 has an EC2: GitHub → repo Settings → Actions → Runners → add a self-hosted runner, copy the registration command and token, run it **on the EC2**. This is a one-time interactive token step tied to your GitHub session, can't be done from chat.
+- [ ] **[Human]** After Phase 11 has an EC2: GitHub → repo Settings → Actions → Runners → add a self-hosted runner, copy the registration command and token, run it **on the EC2** with `--labels blobby-prod` (in addition to the defaults). Without that label `deploy.yml` will not pick the runner. This is a one-time interactive token step tied to your GitHub session, can't be done from chat.
 - [ ] **[Human]** Run the systemd helper on the EC2 so the runner survives logout/reboot. Confirm it shows **Idle**.
 - [ ] **[Both]** Verify: push a trivial change to `main`, watch the Action run on that runner, confirm the live game at the Elastic IP (later the domain) updates without SSH.
 
@@ -80,10 +80,10 @@ Sketch: default VPC (or one public subnet), security group (`8000/tcp` now; `443
 Public URL: Elastic IP first, then a domain A record (Route 53 or Cloudflare). TLS is Caddy/nginx on the instance or Cloudflare in front — not ACM+ALB, not TLS inside `server/main.py`. Mixed content is why TLS belongs with the domain: an `https://` page will open `wss://`.
 
 - [ ] **[Human]** AWS account. IAM (or keys) so Terraform can create EC2, EIP, security groups, and an instance profile if you want SSM later.
-- [ ] **[Agent]** Add `infra/prod/` Terraform for the sketch above. Output the public IP. `user_data` must not register a GitHub runner — that token is Human, Phase 10.
+- [x] **[Agent]** Add `infra/prod/` Terraform for the sketch above. Output the public IP. `user_data` must not register a GitHub runner — that token is Human, Phase 10.
 - [ ] **[Human]** `terraform apply`, confirm the Elastic IP answers. First bring-up may be a manual `docker compose up -d` on the box so you can play a round off-LAN before CD exists.
 - [ ] **[Human]** Point a domain A record at the Elastic IP. Terminate TLS with Caddy/nginx on the instance or Cloudflare in front. Confirm a browser at `https://<domain>` loads the game and the WebSocket connects (`wss`).
-- [ ] **[Both]** Verify: `terraform destroy`, then `apply`, re-register the Phase 10 runner if the instance was replaced, push to `main`, confirm deploy succeeds on the new box.
+- [ ] **[Both]** Verify: `terraform destroy`, then `apply`, re-register the Phase 10 runner with `--labels blobby-prod` if the instance was replaced, push to `main`, confirm deploy succeeds on the new box.
 
 **Exit criteria:** destroy the host with Terraform, get the game back online — pipeline included — in the time it takes to apply and paste one runner token.
 
@@ -124,7 +124,7 @@ Starts after Phase 9 (the Dockerfile and GHCR exist). Does not replace Phases 10
 Why this does not collide with Phase 10: three couplings would actually share a host, a tag, or a URL, and a preview must break all three.
 
 - Preview jobs are `runs-on: ubuntu-latest` and talk to AWS APIs. They never `runs-on: self-hosted`. That runner is production; a self-hosted preview job would `docker compose` on the live EC2.
-- Preview images are tagged `pr-<number>` (and maybe the PR SHA). They never overwrite `latest`. Phase 9's `build` job already refuses to publish `latest` from a PR; [`docker-compose.yml`](../docker-compose.yml) pins `ghcr.io/jonesjac20/blobby:latest`, so the EC2 will not pull a `pr-*` tag.
+- Preview images are tagged `pr-<number>` (and maybe the PR SHA). They never overwrite `latest`. Phase 9's `build` job already refuses to publish `latest` from a PR; production compose is `latest` (Human bring-up) or the main git SHA (`BLOBBY_IMAGE_TAG` from deploy.yml), never a `pr-*` tag.
 - The preview URL is `http://<task-public-ip>:8000`, commented on the PR. The production URL is the Elastic IP, then the domain.
 
 On PR close: `terraform destroy` for that PR's workspace (or desired-count 0). Merge to `main` still only deploys via Phase 10. Closing a PR must not touch the EC2, and destroy never SSHs to it.
@@ -151,6 +151,8 @@ The preview smoke curl wants `/healthz`. If Phase 10 has not landed that route y
 - **Production is a cloud EC2, not the home VirtualBox VM.** Phase 7 proved the game off-LAN on the home box. Phases 10–13 were rewritten to put `main` on Terraform-managed EC2; the home VM is not a `latest` target. The CGNAT/self-hosted rationale in the original Phase 10 is Phase 7 history.
 - **`/healthz` ships with Phase 10.** Phase 13 still owns JSON logs and `/metrics`. The deploy job curls `/healthz`, so the route is pulled forward rather than leaving CD with nothing to fail closed on.
 - **`deploy.yml` is `workflow_call`; `needs: build` lives on the `ci.yml` caller.** GitHub `needs:` is intra-workflow only. A standalone `on: push` deploy file cannot wait for Phase 9's `build` job. PRs still never deploy: `build` is skipped off `main`, and a skipped `needs` skips `deploy`.
+- **Deploy pins the git SHA, not only `latest`.** Parallel `build` jobs on GitHub-hosted runners can retag `latest` out of order. `BLOBBY_IMAGE_TAG=${{ github.sha }}` in `deploy.yml` (Compose default remains `latest` for a Human first bring-up) plus `concurrency` on `ci.yml` close that window. `runs-on` also requires `blobby-prod` so a leftover home-VM runner cannot take the job.
+- **`infra/prod/` creates its own public VPC.** The annex sketch allows default VPC *or* one public subnet. This AWS account has no default VPC in `us-east-1`, so Terraform owns a `/16` + public subnet + IGW instead of looking up `default = true`.
 
 ---
 

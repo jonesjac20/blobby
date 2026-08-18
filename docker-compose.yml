@@ -3,11 +3,14 @@
 # "from the built image", not "rebuild on the VM from a git checkout".
 # `name:` keeps a runner workspace and a Human checkout on the same
 # Compose project, so they do not fight over port 8000.
+# `BLOBBY_IMAGE_TAG` is the git SHA from deploy.yml so a slower parallel
+# `latest` push cannot roll production back. Unset (Human first bring-up)
+# still pulls `latest`.
 name: blobby
 
 services:
   game:
-    image: ghcr.io/jonesjac20/blobby:latest
+    image: ghcr.io/jonesjac20/blobby:${BLOBBY_IMAGE_TAG:-latest}
     ports:
       - "8000:8000"
     restart: unless-stopped
