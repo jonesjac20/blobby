@@ -1,0 +1,9 @@
+# VM compose file. Phase 10 will `docker compose pull` then `up -d`.
+# `image:` is what pull fetches. No `build:` — the annex contract is
+# "from the built image", not "rebuild on the VM from a git checkout".
+services:
+  game:
+    image: ghcr.io/jonesjac20/blobby:latest
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

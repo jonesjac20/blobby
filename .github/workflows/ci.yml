@@ -1,5 +1,5 @@
-# Phase 8 CI. Runs on GitHub-hosted Ubuntu, not the VirtualBox game VM.
-# A red check here is the gate; nothing on the VM changes.
+# Phase 8 CI + Phase 9 package. Runs on GitHub-hosted Ubuntu, not the
+# VirtualBox game VM. A red check here is the gate; nothing on the VM changes.
 name: CI
 
 on:
@@ -20,3 +20,25 @@ jobs:
         run: pytest
       - name: Lint
         run: ruff check .
+
+  # Only on push to main, and only after test is green. A PR must not
+  # publish `latest`. packages:write is required; default GITHUB_TOKEN
+  # cannot push to GHCR without it.
+  build:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          IMAGE="${IMAGE,,}"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
