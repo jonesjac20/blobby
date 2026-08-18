@@ -24,9 +24,9 @@ Goal: every push is tested and linted before anything gets packaged.
 
 - [x] **[Agent]** Add `.github/workflows/ci.yml`: on push and pull_request, checkout, set up Python, `pip install -r requirements-dev.txt`, run `pytest`, run `ruff check`.
 - [x] **[Agent]** Add `ruff` to [`requirements-dev.txt`](../requirements-dev.txt) if it isn't already there.
-- [ ] **[Human]** Push a branch, open a PR, confirm the checks show up and run.
-- [ ] **[Both]** Verify: break a test on purpose, push it, confirm CI goes red before it's merged back.
-- [ ] **[Human, optional]** Turn on branch protection requiring the check to pass before merge. Not required for a one-person POC repo, but cheap and worth mentioning if asked.
+- [x] **[Human]** Push a branch, open a PR, confirm the checks show up and run.
+- [x] **[Both]** Verify: break a test on purpose, push it, confirm CI goes red before it's merged back.
+- [x] **[Human, optional]** Turn on branch protection requiring the check to pass before merge. Not required for a one-person POC repo, but cheap and worth mentioning if asked.
 
 **Exit criteria:** you would not merge a PR with a failing check, whether or not that's technically enforced.
 
@@ -36,11 +36,11 @@ Goal: every push is tested and linted before anything gets packaged.
 
 Goal: the server becomes a deployable image, not a folder you rsync.
 
-- [ ] **[Agent]** Write `../Dockerfile`: `python:3.12-slim` base, copy and `pip install -r requirements.txt` only (runtime pin, not the dev requirements — this mirrors the split `GUIDEBOOK.md` already documents), copy `server/` and the whitelisted `client/` files, `EXPOSE 8000`, `CMD ["python", "-m", "server.main"]`.
-- [ ] **[Agent]** Write `../docker-compose.yml` for the VM: one `game` service from the built image, `8000:8000`, `restart: unless-stopped`.
-- [ ] **[Agent]** Extend the workflow (or add `.github/workflows/build.yml`) so that on push to `main`, after tests pass, it builds the image and pushes to GHCR tagged with the git SHA and `latest`.
-- [ ] **[Human]** Set GHCR package visibility, or give the VM a token scoped to pull it.
-- [ ] **[Both]** Verify: `docker build`, `docker run -p 8000:8000 <image>` locally, confirm a browser tab can join exactly as it did in Phase 3/4 bare-metal.
+- [x] **[Agent]** Write `../Dockerfile`: `python:3.13-slim` base, copy and `pip install -r requirements.txt` only (runtime pin, not the dev requirements — this mirrors the split `GUIDEBOOK.md` already documents), copy `server/` and the whitelisted `client/` files, `EXPOSE 8000`, `CMD ["python", "-m", "server.main"]`.
+- [x] **[Agent]** Write `../docker-compose.yml` for the VM: one `game` service from the built image, `8000:8000`, `restart: unless-stopped`.
+- [x] **[Agent]** Extend the workflow (or add `.github/workflows/build.yml`) so that on push to `main`, after tests pass, it builds the image and pushes to GHCR tagged with the git SHA and `latest`.
+- [ ] **[Human]** Set GHCR package visibility, or give the VM a token scoped to pull it. After the first successful `build` job on `main`: repo → Packages → `blobby` → Package settings → Change visibility. Public is the simple POC path. Private needs a `read:packages` PAT on the VM in a `.env` that stays out of git.
+- [x] **[Both]** Verify: `docker build`, `docker run -p 8000:8000 <image>` locally, confirm a browser tab can join exactly as it did in Phase 3/4 bare-metal.
 
 **Exit criteria:** the container serves the same game the bare-metal process did. Parity check, not a new feature.
 
@@ -104,7 +104,7 @@ Goal: you find out the server is unhealthy before a player does. Ship Phases 8�
 
 ## Divergence from this annex
 
-(Empty until something here turns out to be wrong once built. Same rule as `GUIDEBOOK.md`: if the code and this doc disagree, the doc is the bug — fix it here rather than quietly diverging.)
+- **Image is `python:3.13-slim`, not 3.12.** The annex originally specified `python:3.12-slim`. CI, README, and the laptop are already 3.13, so the image matches the version tests already run. aiohttp does not need 3.12. The Phase 9 Dockerfile box above was updated to 3.13 to match.
 
 ---
 

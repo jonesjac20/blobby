@@ -1,0 +1,25 @@
+# Keep the build context small. The Dockerfile already copies a whitelist;
+# this stops Docker from sending the rest across to the daemon first.
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+tests
+tools
+bots
+docs
+scripts
+client/recordings
+client/viewer.html
+client/viewer.js
+client/recording.js
+client/README.md
+*.md
+.gitignore
+ruff.toml
