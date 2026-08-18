@@ -26,6 +26,18 @@ Thumbs.db
 # Generated scenario recordings (rebuild with: python -m tools.record)
 client/recordings/
 
+# Terraform (state stays local; lockfile in infra/*/ is committed)
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
 # Test / coverage
 .pytest_cache/
 .coverage

@@ -9,12 +9,14 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from server.config import (
     DEFAULT_COLOR,
+    HEALTHZ_STALE_AFTER_SECONDS,
     INITIAL_PLAYER_MASS,
+    SIMULATION_CLOCK_SOURCE,
     SPAWN_INVULN_SECONDS,
     TICK_RATE,
 )
 from server.models import Food
-from server.main import _emit, create_app, emit_tick
+from server.main import LAST_TICK_KEY, _emit, create_app, emit_tick
 from server.protocol import (
     ClientSession,
     FoodStream,
@@ -538,6 +540,80 @@ def test_viewer_and_recordings_are_not_public():
             ):
                 response = await client.get(path)
                 assert response.status == 404, path
+
+    asyncio.run(body())
+
+
+def test_healthz_is_503_before_any_tick():
+    async def body():
+        async with connected_app() as (_app, client):
+            response = await client.get("/healthz")
+            assert response.status == 503
+
+    asyncio.run(body())
+
+
+def test_healthz_is_200_after_a_tick():
+    async def body():
+        async with connected_app() as (app, client):
+            await emit_tick(app, DT)
+            response = await client.get("/healthz")
+            assert response.status == 200
+
+    asyncio.run(body())
+
+
+def test_healthz_is_503_when_the_stamp_is_aged_out():
+    async def body():
+        async with connected_app() as (app, client):
+            await emit_tick(app, DT)
+            app[LAST_TICK_KEY].at = (
+                SIMULATION_CLOCK_SOURCE() - HEALTHZ_STALE_AFTER_SECONDS - 0.1
+            )
+            response = await client.get("/healthz")
+            assert response.status == 503
+
+    asyncio.run(body())
+
+
+def test_a_failed_tick_does_not_refresh_healthz(monkeypatch):
+    async def body():
+        async with connected_app() as (app, client):
+            await emit_tick(app, DT)
+            stamped = app[LAST_TICK_KEY].at
+
+            def boom(*_args, **_kwargs):
+                raise ValueError("boom")
+
+            monkeypatch.setattr("server.main.process_tick", boom)
+            try:
+                await emit_tick(app, DT)
+            except ValueError as exc:
+                assert "boom" in str(exc)
+            else:
+                raise AssertionError("expected process_tick to fail")
+            assert app[LAST_TICK_KEY].at == stamped
+            # Stamp is still fresh; 503 is the age-out test, not this one.
+            assert (await client.get("/healthz")).status == 200
+
+    asyncio.run(body())
+
+
+def test_healthz_is_200_after_the_live_tick_loop_runs():
+    """emit_tick is the test driver; production stamps from tick_loop."""
+
+    async def body():
+        world = World(seed=0, food_target=0)
+        app = create_app(world, autotick=True)
+        async with TestServer(app) as server:
+            async with TestClient(server) as client:
+                deadline = asyncio.get_running_loop().time() + 1.0
+                while asyncio.get_running_loop().time() < deadline:
+                    response = await client.get("/healthz")
+                    if response.status == 200:
+                        return
+                    await asyncio.sleep(0.02)
+                raise AssertionError("live tick loop never stamped /healthz")
 
     asyncio.run(body())
 

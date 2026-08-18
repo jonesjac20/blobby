@@ -258,6 +258,61 @@ def test_tick_loop_survives_a_failing_tick(caplog, monkeypatch):
     assert "boom" in caplog.text
 
 
+def test_tick_loop_does_not_call_on_tick_ok_when_process_tick_fails(monkeypatch):
+    """Production /healthz stamps from this callback; a failed tick must not heartbeat."""
+    calls = {"n": 0, "ok": 0}
+    real_step = simulation.step
+
+    def flaky_step(world, dt):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ValueError("boom")
+        real_step(world, dt)
+
+    monkeypatch.setattr("server.loop.simulation.step", flaky_step)
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = FakeClock()
+
+    async def fake_sleep(seconds: float) -> None:
+        clock.t += seconds
+
+    async def drive() -> None:
+        world = World(seed=0, food_target=0)
+        stop = asyncio.Event()
+        emitted = 0
+
+        async def emit(payload: dict, deaths: list) -> None:
+            nonlocal emitted
+            emitted += 1
+            if emitted == 3:
+                stop.set()
+
+        def on_tick_ok() -> None:
+            calls["ok"] += 1
+
+        await tick_loop(
+            world,
+            [],
+            emit=emit,
+            stop=stop,
+            clock=clock,
+            sleep=fake_sleep,
+            on_tick_ok=on_tick_ok,
+        )
+
+    asyncio.run(drive())
+
+    assert calls["n"] == 4
+    assert calls["ok"] == 3
+
+
 def test_tick_loop_survives_a_failing_broadcast(caplog):
     caplog.set_level(logging.ERROR, logger="blobby")
 
