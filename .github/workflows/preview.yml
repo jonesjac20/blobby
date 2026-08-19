@@ -85,6 +85,11 @@ jobs:
       - name: Wait for /healthz
         working-directory: .
         run: |
+          # Stop-then-start (deployment_maximum_percent = 100): do not curl
+          # until the new revision is the running one, or we hit the old ENI.
+          aws ecs wait services-stable \
+            --cluster blobby-preview \
+            --services "blobby-pr-${{ github.event.number }}"
           URL="$(bash scripts/preview_task_url.sh blobby-preview "blobby-pr-${{ github.event.number }}")"
           IP="${URL#http://}"
           IP="${IP%:8000}"
@@ -102,12 +107,12 @@ jobs:
             echo ""
             echo "24 bots join on boot (sidecar). Spectate to see a populated lobby."
           } >> "$GITHUB_STEP_SUMMARY"
-          for i in $(seq 1 15); do
-            if curl -fsS --max-time 2 "$URL/healthz"; then
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 3 "$URL/healthz"; then
               echo "healthz 200 at $URL/healthz (IP $IP)"
               exit 0
             fi
-            sleep 2
+            sleep 3
           done
           echo "healthz did not return 200 at $URL/healthz (IP $IP)" >&2
           exit 1
