@@ -1,8 +1,10 @@
 # blobby
 
-An agar.io-style multiplayer game. Authoritative Python server, browser + Python-bot clients, WebSocket/JSON protocol. Runs on an Ubuntu server (VM).
+An agar.io-style multiplayer game. Authoritative Python server, browser + Python-bot clients, WebSocket/JSON protocol.
 
-Phase 3 is built: open `http://localhost:8000` for the canvas client (name, color, Play / Spectate). A second tab is Phase 4. Everything the project intends to do, along with a phased checklist and where things currently stand, lives in [docs/GUIDEBOOK.md](docs/GUIDEBOOK.md).
+**Play:** [http://34.195.201.37:8000](http://34.195.201.37:8000) (name, color, Play / Spectate). Bots: `python -m bots.simple_bot --url http://34.195.201.37:8000/ws --count 5`.
+
+Locally, the same client is `http://localhost:8000`. Everything the project intends to do, along with a phased checklist and where things currently stand, lives in [docs/GUIDEBOOK.md](docs/GUIDEBOOK.md).
 
 ## Run it
 
