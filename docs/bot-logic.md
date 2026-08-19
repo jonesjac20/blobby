@@ -88,9 +88,9 @@ No speed-splits at range — they feed the predator. One exception, still inside
 A catchable prey in vision, and not Flee/Recover (unless that free meal). Catchable means one of:
 
 - **Inert** we can eat. Always. Closing speed, hunt-range, and sibling remelt do not apply — the disc does not run, and fragments never fuse back into a threat. Prefer this over live prey and over Graze.
-- Prey is **not fleeing** (closing or grazing) and we can intercept by walking. The only chase that works against a live blob, because we are slower if they run.
+- Prey is **not fleeing** (closing or grazing) and we can intercept by walking. Walk this down first; do not split until the kick itself can cover the gap.
 - Prey is **trapped** (a wall or corner between them and us).
-- **Split-lunge** passes the [checklist](#split-lunge-checklist) below. Not used on inert.
+- **Split-lunge** passes the [checklist](#split-lunge-checklist) below. Chase until the kick reaches, then one `input` aimed from the hitting piece at the prey and `split`. Not used on inert.
 - **Punish:** a player who was a threat is now split into pieces we can eat, `remerge_in` above `PUNISH_REMERGE_FLOOR`, and no remaining threatening piece is on a collision course. This is the Flee → Hunt flip, not a fifth state. See [Tactics](#tactics-that-are-not-new-states).
 
 If none of those, do not enter Hunt; keep Grazing. Futile waddling at a fleeing smaller blob is how bots look broken. Protected others are not prey; steer off a shield we could eat rather than graze or hunt onto it.
@@ -145,7 +145,7 @@ The competitive core. One `split` message, aimed by the current `input`. All mus
 
 1. At least one piece `>= MIN_SPLIT_MASS`, and not already at `MAX_PIECES`.
 2. After the exponential split, **the fragment that will hit the prey** still satisfies `half_mass > prey.mass * EAT_RATIO`.
-3. Kick displacement (`split_kick_speed(parent_mass)` integrated over the decay) plus any *steering surplus* (`max(0, speed_for_mass(half) - speed_for_mass(prey))`) over `min(SPLIT_KICK_DECAY_SECONDS, time-to-vision-edge)` can close the gap. A faster prey's flee over a long decay window does not cancel the kick. Not used on inert.
+3. The kick pop must cover the gap: `need <=` kick displacement (`split_kick_speed(parent_mass)` integrated over the decay). Do not split from across vision, and do not count `SPLIT_KICK_DECAY_SECONDS` of walking as extra reach. Chase until that range, then aim `input` from the hitter at the prey. Sacrifice still aims along the flee vector. Not used on inert.
 4. **Safety:** no threat in vision that could eat any resulting fragment (`threat.mass > half * EAT_RATIO`). If more than one piece is eligible, *every* half must pass, or only split when a single piece is eligible (compact body).
 5. Prey is not `protected`.
 6. Not already in Recover unless this is a free meal that does not need a further split.

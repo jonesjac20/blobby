@@ -518,6 +518,10 @@ def test_split_lunge_each_checklist_line_can_fail():
     far = _piece("p", 800.0, 200.0, 20)
     assert split_lunge_ok(**_lunge_kwargs(ours, far, vision_r=100.0)) is False
 
+    # Kick covers ~24wu at mass 200. Walk-assist must not make a 80wu gap a lunge.
+    mid = _piece("p", 280.0, 200.0, 40)
+    assert split_lunge_ok(**_lunge_kwargs(ours, mid, vision_r=400.0)) is False
+
     threat = [_piece("t", 220.0, 200.0, 400)]
     assert split_lunge_ok(**_lunge_kwargs(ours, prey, threats=threat)) is False
 
@@ -529,6 +533,64 @@ def test_split_lunge_each_checklist_line_can_fail():
         )
         is False
     )
+
+
+def test_hunt_walks_until_kick_range_then_does_not_split_early():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey],
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.9
+    assert abs(dy) < 0.2
+
+
+def test_hunt_lunge_aims_hitter_at_prey():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 220.0, 200.0, 40)])
+    dx, dy, split = decide(
+        _view(
+            [
+                _piece("hitter", 200.0, 200.0, 200),
+                _piece("other", 200.0, 280.0, 80),
+            ],
+            others=[prey],
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is True
+    assert dx > 0.9
+    assert abs(dy) < 0.2
+
+
+def test_hunt_lunge_is_not_rotated_by_a_protected_meal():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 220.0, 200.0, 40)])
+    shield = _player("s", [_piece("s", 200.0, 205.0, 20)], protected=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 200)],
+            others=[prey, shield],
+            food=[(200.0, 300.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is True
+    assert dx > 0.9
+    assert abs(dy) < 0.2
 
 
 def test_sacrifice_checklist_and_timid_disables_it():

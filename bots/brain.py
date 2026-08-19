@@ -305,6 +305,16 @@ def _kick_displacement(parent_mass: float) -> float:
     return split_kick_speed(parent_mass) * SPLIT_KICK_DECAY_SECONDS / 2.0
 
 
+def _lunge_hitter(ours: list[dict], prey: dict) -> dict | None:
+    eligible = [piece for piece in ours if piece["mass"] >= MIN_SPLIT_MASS]
+    if not eligible:
+        return None
+    return min(
+        eligible,
+        key=lambda piece: (piece["x"] - prey["x"]) ** 2 + (piece["y"] - prey["y"]) ** 2,
+    )
+
+
 def split_lunge_ok(
     ours: list[dict],
     prey: dict,
@@ -317,22 +327,22 @@ def split_lunge_ok(
     cx: float,
     cy: float,
 ) -> bool:
+    del vision_r, cx, cy
     if personality.split_willingness <= 0.0 or protected:
         return False
     if in_recover:
         return False
-    eligible = [piece for piece in ours if piece["mass"] >= MIN_SPLIT_MASS]
-    if not eligible or len(ours) >= MAX_PIECES:
+    if len(ours) >= MAX_PIECES:
         return False
     if prey.get("protected"):
         return False
-    hitter = min(
-        eligible,
-        key=lambda piece: (piece["x"] - prey["x"]) ** 2 + (piece["y"] - prey["y"]) ** 2,
-    )
+    hitter = _lunge_hitter(ours, prey)
+    if hitter is None:
+        return False
     half = hitter["mass"] / 2.0
     if not (half > prey["mass"] * EAT_RATIO):
         return False
+    eligible = [piece for piece in ours if piece["mass"] >= MIN_SPLIT_MASS]
     halves = [piece["mass"] / 2.0 for piece in eligible]
     if len(eligible) > 1:
         for half_mass in halves:
@@ -345,21 +355,7 @@ def split_lunge_ok(
                 return False
     dist = math.hypot(hitter["x"] - prey["x"], hitter["y"] - prey["y"])
     need = max(0.0, dist - radius_for_mass(half))
-    window = SPLIT_KICK_DECAY_SECONDS
-    prey_from_us = math.hypot(prey["x"] - cx, prey["y"] - cy)
-    room = max(0.0, vision_r - prey_from_us)
-    prey_speed = speed_for_mass(prey["mass"])
-    if prey_speed > 0.0:
-        t_edge = room / prey_speed
-        if t_edge > 0.0:
-            window = min(window, t_edge)
-        elif room <= 0.0:
-            window = 0.0
-    # Kick displacement is the lunge. A faster prey's flee over a long
-    # decay window must not cancel it: only steering *surplus* (if any)
-    # adds to the kick, and only until they leave vision.
-    surplus = max(0.0, speed_for_mass(half) - prey_speed)
-    return _kick_displacement(hitter["mass"]) + surplus * window >= need
+    return need <= _kick_displacement(hitter["mass"])
 
 
 def sacrifice_ok(
@@ -726,25 +722,37 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             ovy,
         )
     elif memory.state == STATE_HUNT and hunt_target is not None:
-        dx = hunt_target["x"] - cx
-        dy = hunt_target["y"] - cy
-        sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
-        dx += sx
-        dy += sy
-        dx, dy = _fallback_steer(dx, dy)
-        split = (not hunt_target.get("inert")) and split_lunge_ok(
-            ours,
-            hunt_target,
-            threats,
-            personality,
-            protected=protected,
-            in_recover=False,
-            vision_r=vis_r,
-            cx=cx,
-            cy=cy,
-        ) and personality.split_willingness > 0.0
+        lunge = (
+            (not hunt_target.get("inert"))
+            and split_lunge_ok(
+                ours,
+                hunt_target,
+                threats,
+                personality,
+                protected=protected,
+                in_recover=False,
+                vision_r=vis_r,
+                cx=cx,
+                cy=cy,
+            )
+            and personality.split_willingness > 0.0
+        )
         if recovering_cluster and hunt_target in free_meals:
-            split = False
+            lunge = False
+        split = lunge
+        if lunge:
+            hitter = _lunge_hitter(ours, hunt_target)
+            aim = hitter if hitter is not None else {"x": cx, "y": cy}
+            dx = hunt_target["x"] - aim["x"]
+            dy = hunt_target["y"] - aim["y"]
+            dx, dy = _fallback_steer(dx, dy)
+        else:
+            dx = hunt_target["x"] - cx
+            dy = hunt_target["y"] - cy
+            sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
+            dx += sx
+            dy += sy
+            dx, dy = _fallback_steer(dx, dy)
     elif memory.state == STATE_RECOVER:
         target = _pick_graze_target(cx, cy, food_index, memory)
         if target is not None:
