@@ -222,13 +222,15 @@ def _apply_input_and_move(world: World, previous_now: float, dt: float) -> None:
                 piece.y += piece.initial_kick_vy * kick_seconds
             continue
         input_x, input_y = _normalized(*player.last_input)
-        # Merge-ready pieces steer at the whole body's pace so a light leftover
-        # cannot outrun the core it is supposed to sink into.
+        # A split cluster steers as one body. Per-piece speed lets light
+        # fragments outrun the core and string out into a line; the client
+        # already predicts one shared velocity for the same reason.
         cluster_speed = speed_for_mass(sum(piece.mass for piece in player.pieces))
+        split_cluster = len(player.pieces) > 1
         for piece in player.pieces:
             speed = (
                 cluster_speed
-                if _merge_ready(world, piece)
+                if split_cluster
                 else speed_for_mass(piece.mass)
             )
             kick_seconds = _kick_integral(
@@ -250,9 +252,11 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
     rate: cohesion may overshoot, and the projection corrects it the same way
     every time.
 
-    Once a piece's remerge timer clears it homes on the cluster centroid at
-    MERGE_PULL_SPEED + MERGE_RECALL * distance, so a fragment that drifted off
-    still returns, and the heavy core (sitting on the centroid) barely moves.
+    Cohesion is a constant COHESION_SPEED, high enough that a kicked chain
+    collapses back into a cluster instead of coasting as a line. Once a piece's
+    remerge timer clears it homes on the cluster centroid at MERGE_PULL_SPEED +
+    MERGE_RECALL * distance, so a fragment that drifted off still returns, and
+    the heavy core (sitting on the centroid) barely moves.
     """
     for player in world.players.values():
         if player.inert:

@@ -379,7 +379,7 @@ def _split_halves_and_kick() -> Recorder:
     player = rec.spawn("mass 200", cx - 30.0, cy, mass=200)
     rec.run(1.0)
     rec.split(player, 1.0, 0.0)
-    rec.run(3.0)
+    rec.run(SPLIT_KICK_DECAY_SECONDS + 1.5)
     return rec
 
 
@@ -390,7 +390,7 @@ def _kick_decay() -> Recorder:
     rec.run(0.5)
     rec.note(f"kick decays linearly over {SPLIT_KICK_DECAY_SECONDS}s; watch the arrow")
     rec.split(player, 1.0, 0.0)
-    rec.run(2.0)
+    rec.run(SPLIT_KICK_DECAY_SECONDS + 1.5)
     return rec
 
 
@@ -425,7 +425,7 @@ def _split_cohesion() -> Recorder:
     rec.run(1.0)
     rec.split(player, 1.0, 0.0)
     rec.note("no input after the split; only the cluster forces move the halves")
-    rec.run(5.0)
+    rec.run(SPLIT_KICK_DECAY_SECONDS + 2.0)
     return rec
 
 
@@ -643,9 +643,9 @@ SCENARIOS: list[Scenario] = [
         checklist="Split halves pop apart on the kick, then drift back into contact.",
         expect=(
             "Plays at half speed. The halves fly roughly three blob widths apart "
-            "while the kick lasts, hang at full spread for an instant, then slide "
-            "back together and settle overlapping as one body. Nothing is steering "
-            "them - that return trip is cohesion on its own."
+            "while the kick lasts, then snap back together and settle overlapping "
+            "as one body. Nothing is steering them - that return trip is cohesion "
+            "on its own."
         ),
         build=_split_cohesion,
         view=_view_around(*CENTER, 140.0),
