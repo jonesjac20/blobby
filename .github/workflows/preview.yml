@@ -86,29 +86,46 @@ jobs:
         working-directory: .
         run: |
           URL="$(bash scripts/preview_task_url.sh blobby-preview "blobby-pr-${{ github.event.number }}")"
+          IP="${URL#http://}"
+          IP="${IP%:8000}"
           echo "PREVIEW_URL=$URL" >> "$GITHUB_ENV"
-          echo "preview url: $URL"
+          echo "PREVIEW_IP=$IP" >> "$GITHUB_ENV"
+          echo "::notice title=Preview public IP::$IP"
+          echo "Play at: $URL"
+          echo "Fargate public IP: $IP  (not the production Elastic IP)"
+          {
+            echo "## Preview (not production)"
+            echo ""
+            echo "Play at: $URL"
+            echo ""
+            echo "This task's public IP is \`$IP\`. A new push replaces the task and the IP."
+          } >> "$GITHUB_STEP_SUMMARY"
           for i in $(seq 1 15); do
             if curl -fsS --max-time 2 "$URL/healthz"; then
+              echo "healthz 200 at $URL/healthz (IP $IP)"
               exit 0
             fi
             sleep 2
           done
-          echo "healthz did not return 200 at $URL/healthz" >&2
+          echo "healthz did not return 200 at $URL/healthz (IP $IP)" >&2
           exit 1
       - name: Comment preview URL
         env:
           PREVIEW_URL: ${{ env.PREVIEW_URL }}
+          PREVIEW_IP: ${{ env.PREVIEW_IP }}
         uses: actions/github-script@v7
         with:
           script: |
             const marker = '<!-- blobby-preview -->';
             const url = process.env.PREVIEW_URL;
+            const ip = process.env.PREVIEW_IP;
             const body = [
               marker,
               '**Preview (not production).** Ephemeral Fargate task for this PR.',
               '',
-              url,
+              `Play at: ${url}`,
+              '',
+              `This task's public IP is \`${ip}\`. Ignore older IPs; each push can change it.`,
               '',
               'Production is the Elastic IP / domain. This URL dies when the PR closes.',
             ].join('\n');
