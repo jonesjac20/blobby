@@ -29,6 +29,7 @@ VISION_EDGE_HYSTERESIS = 20.0
 APPROACHING_SPEED = 15.0
 STATE_DWELL_SECONDS = 0.4
 FLEE_MEMORY_SECONDS = 1.5
+HUNT_MEMORY_SECONDS = 2.5
 PUNISH_REMERGE_FLOOR = 3.0
 FLEE_PANIC_RADII = 2.0
 WALL_MARGIN = 80.0
@@ -53,18 +54,18 @@ KIND_PEER = "peer"
 @dataclass(frozen=True)
 class Personality:
     vision_scale: float = 1.0
-    hunt_range: float = 0.85
+    hunt_range: float = 1.0
     split_willingness: float = 1.0
     flee_padding: float = 0.0
 
 
 # Cycle these so `--count 17` is not a clone army.
 PERSONALITIES: tuple[Personality, ...] = (
-    Personality(1.0, 0.85, 1.0, 0.0),
-    Personality(1.2, 0.7, 0.0, 30.0),
+    Personality(1.0, 1.0, 1.0, 0.0),
+    Personality(1.2, 0.85, 0.0, 30.0),
     Personality(0.9, 1.0, 1.0, 0.0),
-    Personality(1.1, 0.8, 0.5, 15.0),
-    Personality(1.0, 0.6, 1.0, 10.0),
+    Personality(1.1, 1.0, 0.5, 15.0),
+    Personality(1.0, 1.0, 1.0, 10.0),
 )
 
 
@@ -77,6 +78,9 @@ class Memory:
     vision_ids: set[str] = field(default_factory=set)
     last_threat: tuple[float, float] | None = None
     last_threat_ticks: int = 0
+    last_prey: tuple[float, float] | None = None
+    last_prey_id: str | None = None
+    last_prey_ticks: int = 0
     rng: random.Random = field(default_factory=random.Random)
 
 
@@ -460,6 +464,61 @@ def _wander(
     return waypoint[0] - cx, waypoint[1] - cy
 
 
+def _richest(items: list[dict]) -> dict:
+    return min(items, key=lambda item: (-item["mass"], item["dist"]))
+
+
+def _easy_kill_target(
+    catchable: list[dict], by_owner: dict[str, list[dict]]
+) -> dict | None:
+    """Split, fully-prey cluster with remelt still above the punish floor."""
+    ranked: list[tuple[int, dict]] = []
+    seen: set[str] = set()
+    for item in catchable:
+        owner = item["owner_id"]
+        if owner in seen:
+            continue
+        seen.add(owner)
+        if item.get("inert"):
+            continue
+        parts = by_owner.get(owner, [item])
+        if len(parts) <= 1:
+            continue
+        if any(part["kind"] != KIND_PREY or part.get("inert") for part in parts):
+            continue
+        if max(part["remerge_in"] for part in parts) <= PUNISH_REMERGE_FLOOR:
+            continue
+        cluster = [meal for meal in catchable if meal["owner_id"] == owner]
+        if not cluster:
+            continue
+        ranked.append((len(parts), _richest(cluster)))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda pair: (-pair[0], -pair[1]["mass"], pair[1]["dist"]))
+    return ranked[0][1]
+
+
+def pick_hunt_target(
+    catchable: list[dict], by_owner: dict[str, list[dict]]
+) -> dict | None:
+    """Inert, then split easy-kills, then heaviest still-edible piece."""
+    if not catchable:
+        return None
+    inert_meals = [item for item in catchable if item.get("inert")]
+    if inert_meals:
+        return _richest(inert_meals)
+    easy = _easy_kill_target(catchable, by_owner)
+    if easy is not None:
+        return easy
+    return _richest(catchable)
+
+
+def _clear_hunt_interest(memory: Memory) -> None:
+    memory.last_prey = None
+    memory.last_prey_id = None
+    memory.last_prey_ticks = 0
+
+
 def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
     """Return (dx, dy, split). Mutates `memory`. No sockets, no wall-clock."""
     self_id = view.get("self_id")
@@ -613,23 +672,6 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             return True
         return max(part["remerge_in"] for part in parts) > PUNISH_REMERGE_FLOOR
 
-    """_punish_target is a function that returns the closest prey piece that is not owned by the bot's player"""
-    def _punish_target() -> dict | None:
-        # Iterate over all the pieces owned by other players
-        for parts in by_owner.values():
-            # If any of the pieces is a threat, skip it
-            if any(part["kind"] == KIND_THREAT for part in parts):
-                continue
-            if len(parts) <= 1:
-                continue
-            meals = [part for part in parts if part["kind"] == KIND_PREY]
-            if len(meals) != len(parts) or not meals:
-                continue
-            if not _split_prey_ready(meals[0]):
-                continue
-            return min(meals, key=lambda part: part["dist"])
-        return None
-
     def _catchable(item: dict, *, allow_lunge: bool) -> bool:
         if item["protected"] or protected:
             return False
@@ -640,7 +682,7 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
         if item.get("inert"):
             return True
         hunt_cap = vis_r * personality.hunt_range
-        walking = item["closing"] > -APPROACHING_SPEED and item["dist"] <= hunt_cap
+        walking = item["dist"] <= hunt_cap
         trapped = _is_trapped(item["x"], item["y"], cx, cy, width, height)
         lunge = allow_lunge and split_lunge_ok(
             ours,
@@ -655,7 +697,6 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
         )
         return walking or trapped or lunge
 
-    punish = None if protected else _punish_target()
     free_meals = []
     hunt_target = None
     if not protected:
@@ -666,23 +707,32 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             and _catchable(item, allow_lunge=False)
         ]
         catchable = [item for item in prey if _catchable(item, allow_lunge=True)]
-        inert_meals = [item for item in catchable if item.get("inert")]
-        if inert_meals:
-            hunt_target = min(inert_meals, key=lambda item: item["dist"])
-        elif punish is not None:
-            hunt_target = punish
-        elif catchable:
-            hunt_target = min(catchable, key=lambda item: item["dist"])
+        hunt_target = pick_hunt_target(catchable, by_owner)
+        if hunt_target is None:
+            hunt_target = pick_hunt_target(free_meals, by_owner)
+
+    hunt_ticks = HUNT_MEMORY_SECONDS * tick_rate
+    if want_flee:
+        _clear_hunt_interest(memory)
+    elif hunt_target is not None:
+        memory.last_prey = (hunt_target["x"], hunt_target["y"])
+        memory.last_prey_id = hunt_target["piece_id"]
+        memory.last_prey_ticks = 0
+    elif memory.last_prey is not None:
+        memory.last_prey_ticks += 1
+        if memory.last_prey_ticks >= hunt_ticks:
+            _clear_hunt_interest(memory)
+    ghost_prey = memory.last_prey is not None
 
     desired = STATE_GRAZE
     if want_flee:
         desired = STATE_FLEE
     elif recovering_cluster and not free_meals:
         desired = STATE_RECOVER
-    elif hunt_target is not None or free_meals:
+    elif hunt_target is not None or free_meals or ghost_prey:
         desired = STATE_HUNT
-        if hunt_target is None:
-            hunt_target = min(free_meals, key=lambda item: item["dist"])
+        if hunt_target is None and free_meals:
+            hunt_target = pick_hunt_target(free_meals, by_owner)
     elif recovering_cluster:
         desired = STATE_RECOVER
 
@@ -721,37 +771,50 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             ovx,
             ovy,
         )
-    elif memory.state == STATE_HUNT and hunt_target is not None:
-        lunge = (
-            (not hunt_target.get("inert"))
-            and split_lunge_ok(
-                ours,
-                hunt_target,
-                threats,
-                personality,
-                protected=protected,
-                in_recover=False,
-                vision_r=vis_r,
-                cx=cx,
-                cy=cy,
+    elif memory.state == STATE_HUNT:
+        chasing_ghost = hunt_target is None and memory.last_prey is not None
+        if hunt_target is not None:
+            lunge = (
+                (not hunt_target.get("inert"))
+                and split_lunge_ok(
+                    ours,
+                    hunt_target,
+                    threats,
+                    personality,
+                    protected=protected,
+                    in_recover=False,
+                    vision_r=vis_r,
+                    cx=cx,
+                    cy=cy,
+                )
+                and personality.split_willingness > 0.0
             )
-            and personality.split_willingness > 0.0
-        )
-        if recovering_cluster and hunt_target in free_meals:
-            lunge = False
-        split = lunge
-        if lunge:
-            hitter = _lunge_hitter(ours, hunt_target)
-            aim = hitter if hitter is not None else {"x": cx, "y": cy}
-            dx = hunt_target["x"] - aim["x"]
-            dy = hunt_target["y"] - aim["y"]
+            if recovering_cluster and hunt_target in free_meals:
+                lunge = False
+            split = lunge
+            if lunge:
+                hitter = _lunge_hitter(ours, hunt_target)
+                aim = hitter if hitter is not None else {"x": cx, "y": cy}
+                dx = hunt_target["x"] - aim["x"]
+                dy = hunt_target["y"] - aim["y"]
+                dx, dy = _fallback_steer(dx, dy)
+            else:
+                dx = hunt_target["x"] - cx
+                dy = hunt_target["y"] - cy
+                sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
+                dx += sx
+                dy += sy
+                dx, dy = _fallback_steer(dx, dy)
+        elif chasing_ghost:
+            dx = memory.last_prey[0] - cx
+            dy = memory.last_prey[1] - cy
             dx, dy = _fallback_steer(dx, dy)
         else:
-            dx = hunt_target["x"] - cx
-            dy = hunt_target["y"] - cy
-            sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
-            dx += sx
-            dy += sy
+            target = _pick_graze_target(cx, cy, food_index, memory)
+            if target is not None:
+                dx, dy = target[0] - cx, target[1] - cy
+            else:
+                dx, dy = _wander(cx, cy, width, height, vis_r, memory)
             dx, dy = _fallback_steer(dx, dy)
     elif memory.state == STATE_RECOVER:
         target = _pick_graze_target(cx, cy, food_index, memory)
