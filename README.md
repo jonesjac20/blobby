@@ -2,7 +2,7 @@
 
 An agar.io-style multiplayer game. Authoritative Python server, browser + Python-bot clients, WebSocket/JSON protocol.
 
-**Play:** [http://34.195.201.37:8000](http://34.195.201.37:8000) (name, color, Play / Spectate). Production and PR previews already run 17 bots as a sidecar. Extra local bots: `python -m bots.simple_bot --url http://34.195.201.37:8000/ws --count 5`.
+**Play:** [http://34.195.201.37:8000](http://34.195.201.37:8000) (name, color, Play / Spectate). Production and PR previews already run 17 bots as a sidecar on one shared WebSocket. Extra local bots: `python -m bots.simple_bot --url http://34.195.201.37:8000/ws --count 5`.
 
 Locally, the same client is `http://localhost:8000`. Everything the project intends to do, along with a phased checklist and where things currently stand, lives in [docs/GUIDEBOOK.md](docs/GUIDEBOOK.md).
 
@@ -13,7 +13,8 @@ pip install -r requirements-dev.txt
 python -m pytest                 # simulation, protocol, and WebSocket tests
 python -m server.main            # game server: client at http://localhost:8000, WebSocket at /ws
 python -m bots.simple_bot --count 5
-python -m bots.simple_bot --count 17   # living-lobby stress; tick Hz is logged by the server
+python -m bots.simple_bot --count 17            # living lobby; one shared socket
+python -m bots.simple_bot --count 17 --sockets  # one WebSocket per bot (load test)
 python -m tools.probe_client --name A
 python -m server.demo            # Phase 1 console harness: two hardcoded players, no networking
 python -m tools.record --serve   # record every verification scenario and open the browser viewer

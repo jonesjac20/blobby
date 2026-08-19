@@ -1,6 +1,8 @@
 """Ordinary WebSocket bot clients. Plumbing only — the brain is bots.brain.
 
     python -m bots.simple_bot --url http://127.0.0.1:8000/ws --name bot --count 5
+    python -m bots.simple_bot --count 17              # one shared socket (default)
+    python -m bots.simple_bot --count 17 --sockets    # one WebSocket per bot
 """
 
 from __future__ import annotations
@@ -314,6 +316,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", default="bot")
     parser.add_argument("--color", default=None, help="Pin the first client; others stay random.")
     parser.add_argument("--count", type=int, default=1)
+    parser.add_argument(
+        "--sockets",
+        action="store_true",
+        help="One WebSocket per bot (legacy load test). Default is one shared socket.",
+    )
     args = parser.parse_args(argv)
     if args.count < 1:
         parser.error("--count must be >= 1")
@@ -337,8 +344,12 @@ def main(argv: list[str] | None = None) -> int:
             except NotImplementedError:
                 # Windows: signal handlers on the loop are limited.
                 signal.signal(sig, lambda *_: _request_stop())
-        # Run the bots
-        loop.run_until_complete(run_bots(args.url, names, colors, stop))
+        if args.sockets:
+            loop.run_until_complete(run_bots(args.url, names, colors, stop))
+        else:
+            from bots.fleet import run_fleet
+
+            loop.run_until_complete(run_fleet(args.url, names, colors, stop))
     except KeyboardInterrupt:
         stop.set()
     finally:

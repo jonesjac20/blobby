@@ -41,7 +41,7 @@ Goal: every push is tested and linted before anything gets packaged.
 Goal: the server becomes a deployable image, not a folder you rsync.
 
 - [x] **[Agent]** Write `../Dockerfile`: `python:3.13-slim` base, copy and `pip install -r requirements.txt` only (runtime pin, not the dev requirements — this mirrors the split `GUIDEBOOK.md` already documents), copy `server/`, `bots/`, and the whitelisted `client/` files, `EXPOSE 8000`, `CMD ["python", "-m", "server.main"]`. Bots are in the image so a sidecar can run them; they are not started by this CMD.
-- [x] **[Agent]** Write `../docker-compose.yml` for the game host: `game` from the built image, `8000:8000`, plus a `bots` sidecar (`python -m bots.simple_bot --url http://game:8000/ws --count 17`), both `restart: unless-stopped`. No host port for bots.
+- [x] **[Agent]** Write `../docker-compose.yml` for the game host: `game` from the built image, `8000:8000`, plus a `bots` sidecar (`python -m bots.simple_bot --url http://game:8000/ws --count 17`, shared socket; `--sockets` is the one-WS-per-bot load test), both `restart: unless-stopped`. No host port for bots. No Compose CPU cap — after fan-out is one send, the sim can use the host.
 - [x] **[Agent]** Extend the workflow (or add `.github/workflows/build.yml`) so that on push to `main`, after tests pass, it builds the image and pushes to GHCR tagged with the git SHA and `latest`.
 - [x] **[Human]** Set GHCR package visibility, or give the game host a token scoped to pull it. After the first successful `build` job on `main`: repo → Packages → `blobby` → Package settings → Change visibility. Public is the simple POC path. Private needs a `read:packages` PAT on the host in a `.env` that stays out of git.
 - [x] **[Both]** Verify: `docker build`, `docker run -p 8000:8000 <image>` locally, confirm a browser tab can join exactly as it did in Phase 3/4 bare-metal.
@@ -130,7 +130,7 @@ Why this does not collide with Phase 10: three couplings would actually share a 
 
 On PR close: `terraform destroy` for that PR's S3 state key (`preview/pr-<n>/terraform.tfstate`). Merge to `main` still only deploys via Phase 10. Closing a PR must not touch the EC2, and destroy never SSHs to it.
 
-Native `/ws` still works on the task — `game` on port 8000, same origin, plus a non-essential `bots` sidecar on localhost `/ws` (`--count 17`). No API Gateway. No ALB. Task `assign_public_ip = ENABLED` in the **existing prod public subnet**, security group `blobby-preview` (`8000/tcp`). Same VPC as the EC2, different compute. Task size is **1 vCPU / 2 GB** so 17 bots + game can hold 30Hz. That 1 vCPU is shared; preview hz may still sag relative to the 2 vCPU EC2.
+Native `/ws` still works on the task — `game` on port 8000, same origin, plus a non-essential `bots` sidecar on localhost `/ws` (`--count 17`, shared socket). No API Gateway. No ALB. Task `assign_public_ip = ENABLED` in the **existing prod public subnet**, security group `blobby-preview` (`8000/tcp`). Same VPC as the EC2, different compute. Task size is **1 vCPU / 2 GB** so 17 bots + game can hold 30Hz. That 1 vCPU is shared; preview hz may still sag relative to the 2 vCPU EC2.
 
 GHCR is public, so Fargate can pull without ECR or a PAT. Do not reuse the production host's GHCR token as a Fargate secret.
 
@@ -295,7 +295,7 @@ To remove preview **foundation** later (optional): close all preview PRs first, 
 - **Preview is a separate workflow; `ci.yml` is unchanged.** `ci.yml` is test-always plus build+deploy on `main` only. Its `cancel-in-progress: true` would interrupt `terraform apply`. Preview re-runs pytest/ruff itself.
 - **Preview OIDC `sub` is `repo:OWNER/REPO:pull_request` (or the immutable `OWNER@id/REPO@id` form).** PR jobs do not present `ref:refs/heads/...`. Do not require `job_workflow_ref` on a non-reusable workflow; a missing claim fails the whole trust statement.
 - **Preview smokes `/healthz`, not `/`.** Phase 10 already landed the route.
-- **Always-on 17-bot lobby is a sidecar, not in-process.** `python -m bots.simple_bot --count 17` talks `/ws` like a human. Compose (`http://game:8000/ws`) and preview Fargate (`http://127.0.0.1:8000/ws`, `essential = false`, restart loop) share the same image; `server.main` does not spawn them. Production needs `t3.small` (2 GB); preview needs 1 vCPU / 2 GB. `t3.micro` / 0.25 vCPU / 0.5 GB was the game-only size. `.dockerignore` must not exclude `bots/` or `COPY bots/` is empty.
+- **Always-on 17-bot lobby is a sidecar, not in-process.** `python -m bots.simple_bot --count 17` talks `/ws` like a human, on **one shared socket** (N `join`s, tagged `input`/`split`). `--sockets` is the one-WS-per-bot load test kept for posterity. Compose (`http://game:8000/ws`) and preview Fargate (`http://127.0.0.1:8000/ws`, `essential = false`, restart loop) share the same image; `server.main` does not spawn them. A dedicated second EC2/Fargate for bots is optional later if the sidecar still contends after fan-out is one send; it does not replace the shared socket. Production needs `t3.small` (2 GB); preview needs 1 vCPU / 2 GB. `t3.micro` / 0.25 vCPU / 0.5 GB was the game-only size. `.dockerignore` must not exclude `bots/` or `COPY bots/` is empty.
 
 ---
 

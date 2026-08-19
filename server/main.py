@@ -63,12 +63,18 @@ def _state_is_stale_for(session: ClientSession, payload: dict) -> bool:
     not been told is its own, and the pre-join snapshot after `welcome` omits
     the player entirely, so a follow-cam finds nothing. Spectators have no
     player to be missing and always get the frame.
+
+    A fleet socket applies the same rules per owned id: hold a frame that
+    names a still-pending welcome, and hold a frame that names none of the
+    ids already welcomed.
     """
-    if session.player_id is None:
+    if not session.player_ids:
         return False
-    if not session.welcome_sent:
+    named = {player["id"] for player in payload["players"]}
+    if session.pending_welcome & named:
         return True
-    return all(player["id"] != session.player_id for player in payload["players"])
+    welcomed = session.player_ids - session.pending_welcome
+    return bool(welcomed) and welcomed.isdisjoint(named)
 
 
 async def _emit(
@@ -98,10 +104,12 @@ async def _emit(
         except Exception:
             continue
     for session, message in deaths:
-        # process_tick clears player_id before this await; a join in the
-        # window above starts a new life. That game_over belongs to the
-        # previous one and must not arrive after welcome.
-        if session.player_id is not None:
+        # process_tick clears the dead id before this await; a human join
+        # in the window above starts a new life. That game_over belongs to
+        # the previous one and must not arrive after welcome. A fleet
+        # socket still owns sibling lives, so skip only when this is not a
+        # multi-life session and a new id is already claimed.
+        if not session.allows_multi and session.player_ids:
             continue
         if session.ws is None or session.ws.closed:
             continue
@@ -137,8 +145,11 @@ def _peer(request: web.Request) -> str:
 
 
 def _who(session: ClientSession) -> str:
-    if session.player_id is not None:
-        return f"player {session.name!r} id={session.player_id[:8]}"
+    if session.player_ids:
+        if session.allows_multi and len(session.player_ids) > 1:
+            return f"fleet {session.name!r} lives={len(session.player_ids)}"
+        pid = session.player_id
+        return f"player {session.name!r} id={pid[:8]}"
     if session.name:
         return f"menu {session.name!r}"
     return "spectator"
@@ -194,7 +205,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 if reply is not None:
                     await ws.send_json(reply)
                     if reply.get("type") == "welcome":
-                        session.welcome_sent = True
+                        session.mark_welcome_sent(reply["id"])
                         log.info(
                             "join %s peer=%s players=%d sockets=%d",
                             _who(session),
@@ -213,9 +224,9 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         except ValueError:
             pass
         who = _who(session)
-        if session.player_id is not None:
-            world.remove_player(session.player_id)
-            session.player_id = None
+        for player_id in list(session.player_ids):
+            world.remove_player(player_id)
+        session.player_id = None
         log.info("disconnected %s peer=%s sockets=%d", who, peer, len(sessions))
     return ws
 

@@ -54,8 +54,11 @@ async def _until(predicate, timeout: float = 1.0) -> None:
     raise AssertionError("timed out waiting for websocket handler")
 
 
-async def _join(ws, name: str, color: str = DEFAULT_COLOR) -> dict:
-    await ws.send_json({"type": "join", "name": name, "color": color})
+async def _join(ws, name: str, color: str = DEFAULT_COLOR, *, bot: bool = False) -> dict:
+    payload: dict = {"type": "join", "name": name, "color": color}
+    if bot:
+        payload["bot"] = True
+    await ws.send_json(payload)
     reply = await asyncio.wait_for(ws.receive_json(), timeout=1)
     assert reply["type"] == "welcome"
     return reply
@@ -214,6 +217,7 @@ def test_last_piece_eat_sends_game_over_and_drops_the_player():
         )
         assert game_over["peak_mass"] >= 40
         assert game_over["survival_seconds"] >= 0
+        assert game_over["id"] == prey_id
         assert prey_id not in world.players
 
     asyncio.run(body())
@@ -731,5 +735,52 @@ def test_a_failed_food_send_is_retried_without_advancing_the_cursor():
         assert session.food_version == 1
         assert [message["type"] for message in sent] == ["state", "food", "state"]
         assert sent[1] == stream.payload
+
+    asyncio.run(body())
+
+
+def test_one_socket_two_bot_joins_share_state_and_disconnect_drops_both():
+    async def body():
+        world = World(seed=0, food_target=0)
+        async with connected_app(world) as (app, client):
+            ws = await client.ws_connect("/ws")
+            first = await _join(ws, "bot", bot=True)
+            second = await _join(ws, "bot2", bot=True)
+            assert first["id"] != second["id"]
+            state = await _state_after_tick(app, ws)
+            ids = {player["id"] for player in state["players"]}
+            assert ids == {first["id"], second["id"]}
+            await ws.close()
+            await _until(
+                lambda: first["id"] not in world.players
+                and second["id"] not in world.players
+            )
+
+        assert first["id"] not in world.players
+        assert second["id"] not in world.players
+
+    asyncio.run(body())
+
+
+def test_multi_life_socket_ignores_untagged_and_foreign_input():
+    async def body():
+        world = World(seed=0, food_target=0)
+        async with connected_app(world) as (app, client):
+            ws = await client.ws_connect("/ws")
+            first = await _join(ws, "bot", bot=True)
+            second = await _join(ws, "bot2", bot=True)
+            await _state_after_tick(app, ws)
+            await ws.send_json({"type": "input", "dx": 1.0, "dy": 0.0})
+            await _flush()
+            assert world.players[first["id"]].last_input == (0.0, 0.0)
+            assert world.players[second["id"]].last_input == (0.0, 0.0)
+            await ws.send_json(
+                {"type": "input", "dx": 1.0, "dy": 0.0, "id": first["id"]}
+            )
+            await _until(
+                lambda: world.players[first["id"]].last_input == (1.0, 0.0)
+            )
+            assert world.players[second["id"]].last_input == (0.0, 0.0)
+            await ws.close()
 
     asyncio.run(body())

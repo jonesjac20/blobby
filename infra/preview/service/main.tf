@@ -77,6 +77,7 @@ resource "aws_ecs_task_definition" "preview" {
           condition     = "START"
         }
       ]
+      # Shared socket is the default (`--count 17` without `--sockets`).
       command = [
         "sh",
         "-c",

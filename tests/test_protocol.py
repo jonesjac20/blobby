@@ -11,6 +11,7 @@ from server.config import (
     DEFAULT_NAME,
     FOOD_MASS,
     INITIAL_PLAYER_MASS,
+    MIN_SPLIT_MASS,
     NAME_MAX_LEN,
     REMERGE_SECONDS,
     SPAWN_INVULN_SECONDS,
@@ -29,6 +30,7 @@ from server.protocol import (
     handle_join,
     handle_message,
     parse_client_message,
+    playing_players,
     serialize_state,
     update_and_eliminate,
 )
@@ -79,6 +81,21 @@ def test_parse_drops_malformed_json_and_unknown_types():
     assert parse_client_message("not json") is None
     assert parse_client_message({"type": "explode"}) is None
     assert parse_client_message({"type": "split"}) == {"type": "split"}
+
+
+def test_parse_input_and_split_accept_optional_id():
+    assert parse_client_message({"type": "input", "dx": 1, "dy": 0, "id": "abc"}) == {
+        "type": "input",
+        "dx": 1.0,
+        "dy": 0.0,
+        "id": "abc",
+    }
+    assert parse_client_message({"type": "split", "id": "abc"}) == {
+        "type": "split",
+        "id": "abc",
+    }
+    assert parse_client_message({"type": "input", "dx": 1, "dy": 0, "id": ""}) is None
+    assert parse_client_message({"type": "split", "id": 1}) is None
 
 
 def test_serialize_state_matches_wire_shape_and_includes_color(world):
@@ -235,6 +252,7 @@ def test_empty_piece_list_sends_game_over_and_removes_the_player(world):
                 "type": "game_over",
                 "peak_mass": 80.0,
                 "survival_seconds": 2.5,
+                "id": welcome["id"],
             },
         )
     ]
@@ -451,6 +469,105 @@ def test_process_tick_advances_sim_time_and_snapshots(world):
     assert payload["type"] == "state"
     assert len(payload["players"]) == 1
     assert "food" not in payload
+
+
+def _bot_join(world: World, session: ClientSession, name: str) -> dict:
+    reply = handle_join(
+        world,
+        session,
+        {"type": "join", "name": name, "color": DEFAULT_COLOR, "bot": True},
+    )
+    assert reply is not None
+    return reply
+
+
+def test_bot_session_can_hold_two_lives(world):
+    session = ClientSession()
+    first = _bot_join(world, session, "bot")
+    second = _bot_join(world, session, "bot2")
+
+    assert first["id"] != second["id"]
+    assert session.owns(first["id"])
+    assert session.owns(second["id"])
+    assert session.allows_multi is True
+    assert {player.id for player in playing_players(world, session)} == {
+        first["id"],
+        second["id"],
+    }
+
+
+def test_second_non_bot_join_is_ignored_even_on_a_bot_session(world):
+    session = ClientSession()
+    first = _bot_join(world, session, "bot")
+    ignored = handle_join(
+        world, session, {"type": "join", "name": "human", "color": DEFAULT_COLOR}
+    )
+
+    assert ignored is None
+    assert len(world.players) == 1
+    assert first["id"] in world.players
+
+
+def test_multi_life_input_and_split_require_an_owned_id(world):
+    session = ClientSession()
+    first = _bot_join(world, session, "bot")
+    second = _bot_join(world, session, "bot2")
+    a = world.players[first["id"]]
+    b = world.players[second["id"]]
+    a.pieces[0].mass = MIN_SPLIT_MASS * 2
+    a.last_input = (1.0, 0.0)
+
+    handle_message(world, session, {"type": "input", "dx": 1.0, "dy": 0.0})
+    handle_message(world, session, {"type": "split"})
+    assert a.last_input == (1.0, 0.0)
+    assert b.last_input == (0.0, 0.0)
+    assert len(a.pieces) == 1
+
+    handle_message(
+        world, session, {"type": "input", "dx": 0.0, "dy": 1.0, "id": "nope"}
+    )
+    handle_message(world, session, {"type": "split", "id": "nope"})
+    assert a.last_input == (1.0, 0.0)
+    assert b.last_input == (0.0, 0.0)
+    assert len(a.pieces) == 1
+
+    handle_message(
+        world,
+        session,
+        {"type": "input", "dx": -1.0, "dy": 0.0, "id": first["id"]},
+    )
+    handle_message(world, session, {"type": "split", "id": first["id"]})
+    assert a.last_input == (-1.0, 0.0)
+    assert b.last_input == (0.0, 0.0)
+    assert len(a.pieces) == 2
+
+
+def test_game_over_includes_id_and_only_clears_that_life(world):
+    session = ClientSession()
+    first = _bot_join(world, session, "bot")
+    second = _bot_join(world, session, "bot2")
+    world.now = 4.0
+    session.peak_masses[first["id"]] = 80.0
+    session.spawn_sim_times[first["id"]] = 1.0
+    world.players[first["id"]].pieces.clear()
+
+    deaths = update_and_eliminate(world, [session])
+
+    assert first["id"] not in world.players
+    assert second["id"] in world.players
+    assert session.owns(second["id"])
+    assert not session.owns(first["id"])
+    assert deaths == [
+        (
+            session,
+            {
+                "type": "game_over",
+                "peak_mass": 80.0,
+                "survival_seconds": 3.0,
+                "id": first["id"],
+            },
+        )
+    ]
 
 
 def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):

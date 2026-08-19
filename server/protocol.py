@@ -10,7 +10,7 @@ import math
 import os
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from server import simulation
@@ -39,23 +39,98 @@ def encode_json(payload: dict) -> str:
 
 @dataclass
 class ClientSession:
-    """Per-socket state. Survives death; the Player does not."""
+    """Per-socket state. Survives death; the Player does not.
+
+    A human socket owns at most one player. A bot fleet (`bot: true` joins)
+    may own many; `player_id` is then any remaining owned id, for call sites
+    that still speak a single life.
+    """
 
     ws: Any = None
-    player_id: str | None = None
+    player_ids: set[str] = field(default_factory=set)
+    pending_welcome: set[str] = field(default_factory=set)
+    peak_masses: dict[str, float] = field(default_factory=dict)
+    spawn_sim_times: dict[str, float] = field(default_factory=dict)
     name: str = ""
     color: str = DEFAULT_COLOR
-    peak_mass: float = 0.0
-    spawn_sim_time: float | None = None
-    # False between spawning the player and the socket actually receiving its
-    # welcome. A state broadcast in that window would name a player the client
-    # cannot follow yet.
-    welcome_sent: bool = False
+    # Set when this socket has joined with `"bot": true`. Extra joins are
+    # allowed; a human socket still ignores a second join while alive.
+    allows_multi: bool = False
     # Version of the food field this socket has successfully received. 0 matches
     # FoodStream's initial version, which is the empty field — so a world with
     # no food never sends a food message, and a late joiner (still at 0) gets
     # the current field on the next emit.
     food_version: int = 0
+
+    @property
+    def player_id(self) -> str | None:
+        if not self.player_ids:
+            return None
+        return next(iter(self.player_ids))
+
+    @player_id.setter
+    def player_id(self, value: str | None) -> None:
+        if value is None:
+            self.player_ids.clear()
+            self.pending_welcome.clear()
+            self.peak_masses.clear()
+            self.spawn_sim_times.clear()
+            return
+        if value not in self.player_ids:
+            self.player_ids = {value}
+
+    def owns(self, player_id: str) -> bool:
+        return player_id in self.player_ids
+
+    def mark_welcome_sent(self, player_id: str) -> None:
+        self.pending_welcome.discard(player_id)
+
+    def release_player(self, player_id: str) -> None:
+        self.player_ids.discard(player_id)
+        self.pending_welcome.discard(player_id)
+        self.peak_masses.pop(player_id, None)
+        self.spawn_sim_times.pop(player_id, None)
+
+    @property
+    def welcome_sent(self) -> bool:
+        return bool(self.player_ids) and not self.pending_welcome
+
+    @welcome_sent.setter
+    def welcome_sent(self, sent: bool) -> None:
+        if sent:
+            self.pending_welcome.clear()
+        else:
+            self.pending_welcome = set(self.player_ids)
+
+    @property
+    def peak_mass(self) -> float:
+        pid = self.player_id
+        if pid is None:
+            return 0.0
+        return self.peak_masses.get(pid, 0.0)
+
+    @peak_mass.setter
+    def peak_mass(self, value: float) -> None:
+        pid = self.player_id
+        if pid is not None:
+            self.peak_masses[pid] = value
+
+    @property
+    def spawn_sim_time(self) -> float | None:
+        pid = self.player_id
+        if pid is None:
+            return None
+        return self.spawn_sim_times.get(pid)
+
+    @spawn_sim_time.setter
+    def spawn_sim_time(self, value: float | None) -> None:
+        pid = self.player_id
+        if pid is None:
+            return
+        if value is None:
+            self.spawn_sim_times.pop(pid, None)
+        else:
+            self.spawn_sim_times[pid] = value
 
 
 class FoodStream:
@@ -166,10 +241,22 @@ def parse_client_message(raw: object) -> dict | None:
             return None
         if not math.isfinite(dx) or not math.isfinite(dy):
             return None
-        return {"type": "input", "dx": float(dx), "dy": float(dy)}
+        msg = {"type": "input", "dx": float(dx), "dy": float(dy)}
+        return _with_optional_id(raw, msg)
     if msg_type == "split":
-        return {"type": "split"}
+        return _with_optional_id(raw, {"type": "split"})
     return None
+
+
+def _with_optional_id(raw: dict, msg: dict) -> dict | None:
+    """Attach `"id"` when present. Drop the message if it is not a non-empty string."""
+    if "id" not in raw:
+        return msg
+    ident = raw["id"]
+    if not isinstance(ident, str) or not ident:
+        return None
+    msg["id"] = ident
+    return msg
 
 
 def _wire_config() -> dict:
@@ -224,16 +311,47 @@ def welcome_message(player_id: str) -> dict:
     }
 
 
-def game_over_message(peak_mass: float, survival_seconds: float) -> dict:
-    return {
+def game_over_message(
+    peak_mass: float, survival_seconds: float, player_id: str | None = None
+) -> dict:
+    payload = {
         "type": "game_over",
         "peak_mass": peak_mass,
         "survival_seconds": survival_seconds,
     }
+    if player_id is not None:
+        payload["id"] = player_id
+    return payload
 
 
 def playing_player(world: World, session: ClientSession) -> Player | None:
-    if session.player_id is None:
+    for player_id in session.player_ids:
+        player = world.players.get(player_id)
+        if player is not None:
+            return player
+    return None
+
+
+def playing_players(world: World, session: ClientSession) -> list[Player]:
+    return [
+        world.players[player_id]
+        for player_id in session.player_ids
+        if player_id in world.players
+    ]
+
+
+def _owned_player(world: World, session: ClientSession, msg: dict) -> Player | None:
+    """The player an `input`/`split` is for.
+
+    One life: omit `id` (browsers) or send that id. Many lives: `id` is
+    required and must be owned; missing or foreign ids are ignored.
+    """
+    ident = msg.get("id")
+    if ident is not None:
+        if not session.owns(ident):
+            return None
+        return world.players.get(ident)
+    if len(session.player_ids) != 1:
         return None
     return world.players.get(session.player_id)
 
@@ -245,7 +363,7 @@ def handle_message(world: World, session: ClientSession, msg: dict) -> dict | No
         handle_input(world, session, msg)
         return None
     if msg["type"] == "split":
-        handle_split(world, session)
+        handle_split(world, session, msg)
         return None
     return None
 
@@ -288,7 +406,14 @@ def _debug_spawn_mass() -> float | None:
 
 
 def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
-    if playing_player(world, session) is not None:
+    is_bot = bool(msg.get("bot"))
+    if is_bot:
+        session.allows_multi = True
+    # A human socket ignores a second join while any owned life is still in
+    # the world. A bot fleet (`bot: true`) may spawn another alongside them.
+    if playing_player(world, session) is not None and not (
+        session.allows_multi and is_bot
+    ):
         return None
     # The name that lands in the world, not the one that was typed, so the log
     # line and the labels agree. The client learns it from `state` like everyone
@@ -299,7 +424,6 @@ def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     mass = _debug_spawn_mass()
     if mass is None:
         mass = INITIAL_PLAYER_MASS
-    is_bot = bool(msg.get("bot"))
     if spawn is None:
         player = world.spawn_player(
             session.name, color=session.color, mass=mass, bot=is_bot
@@ -317,22 +441,23 @@ def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     # away from other bodies, so this is the only thing stopping a join from
     # landing inside a predator and dying on the next tick.
     player.spawn_time = world.now
-    session.player_id = player.id
-    session.welcome_sent = False
-    session.peak_mass = sum(piece.mass for piece in player.pieces)
-    session.spawn_sim_time = world.now
+    peak = sum(piece.mass for piece in player.pieces)
+    session.player_ids.add(player.id)
+    session.pending_welcome.add(player.id)
+    session.peak_masses[player.id] = peak
+    session.spawn_sim_times[player.id] = world.now
     return welcome_message(player.id)
 
 
 def handle_input(world: World, session: ClientSession, msg: dict) -> None:
-    player = playing_player(world, session)
+    player = _owned_player(world, session, msg)
     if player is None or player.inert:
         return
     player.last_input = (msg["dx"], msg["dy"])
 
 
-def handle_split(world: World, session: ClientSession) -> None:
-    player = playing_player(world, session)
+def handle_split(world: World, session: ClientSession, msg: dict) -> None:
+    player = _owned_player(world, session, msg)
     if player is None or player.inert:
         return
     simulation.try_split(world, player)
@@ -351,9 +476,10 @@ def update_and_eliminate(
     already down to zero pieces here. Mass it gained before dying, and mass
     it held before a burst peel, lives on `Player.last_total_mass`.
     """
-    session_by_player = {
-        session.player_id: session for session in sessions if session.player_id
-    }
+    session_by_player: dict[str, ClientSession] = {}
+    for session in sessions:
+        for player_id in session.player_ids:
+            session_by_player[player_id] = session
     deaths: list[tuple[ClientSession, dict]] = []
     eliminated: list[str] = []
 
@@ -362,17 +488,19 @@ def update_and_eliminate(
         if session is not None:
             current = sum(piece.mass for piece in player.pieces)
             total = max(current, player.last_total_mass)
-            if total > session.peak_mass:
-                session.peak_mass = total
+            if total > session.peak_masses.get(player.id, 0.0):
+                session.peak_masses[player.id] = total
         if player.pieces:
             continue
         eliminated.append(player.id)
         if session is not None:
-            spawned = session.spawn_sim_time
+            spawned = session.spawn_sim_times.get(player.id)
             survival = world.now - spawned if spawned is not None else 0.0
-            deaths.append((session, game_over_message(session.peak_mass, survival)))
-            session.player_id = None
-            session.spawn_sim_time = None
+            peak = session.peak_masses.get(player.id, 0.0)
+            deaths.append(
+                (session, game_over_message(peak, survival, player.id))
+            )
+            session.release_player(player.id)
 
     for player_id in eliminated:
         world.remove_player(player_id)

@@ -877,3 +877,31 @@ def test_two_clients_get_different_names_and_colors():
     colors = assign_colors(2, None, __import__("random").Random(1))
     assert names[0] != names[1]
     assert colors[0] != colors[1]
+
+
+def test_fleet_commands_for_state_tag_input_with_id():
+    from bots.fleet import FleetClient
+
+    stop = asyncio.Event()
+    fleet = FleetClient(
+        url="http://127.0.0.1:8000/ws",
+        names=["bot", "bot2"],
+        colors=["#111111", "#222222"],
+        food_index=FoodIndex(),
+        http=object(),
+        stop=stop,
+    )
+    fleet.world_width = WORLD_WIDTH
+    fleet.world_height = WORLD_HEIGHT
+    fleet.slots[0].player_id = "aa"
+    fleet.slots[1].player_id = "bb"
+    state = {
+        "players": [
+            _player("aa", [_piece("a0", 100.0, 100.0, 50.0)], name="bot"),
+            _player("bb", [_piece("b0", 400.0, 400.0, 50.0)], name="bot2"),
+        ]
+    }
+    commands = fleet.commands_for_state(state)
+    tagged = [command for command in commands if command["type"] == "input"]
+    assert {command["id"] for command in tagged} == {"aa", "bb"}
+    assert all("id" in command for command in commands)

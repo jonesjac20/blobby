@@ -6,9 +6,10 @@
 # `BLOBBY_IMAGE_TAG` is the git SHA from deploy.yml so a slower parallel
 # `latest` push cannot roll production back. Unset (Human first bring-up)
 # still pulls `latest`.
-# `bots` is the same image with a different command: 17 WebSocket clients
-# so the lobby is populated without a laptop running simple_bot.
-# cpus: game gets the sim core; bots must not preempt process_tick.
+# `bots` is the same image with a different command: 17 lives on one
+# shared WebSocket so the lobby is populated without a laptop running
+# simple_bot. No CPU cap — after fan-out is one send, the sim can use
+# the host; bots are cheap. `--sockets` is the one-WS-per-bot load test.
 name: blobby
 
 services:
@@ -16,12 +17,10 @@ services:
     image: ghcr.io/jonesjac20/blobby:${BLOBBY_IMAGE_TAG:-latest}
     ports:
       - "8000:8000"
-    cpus: "1.4"
     restart: unless-stopped
   bots:
     image: ghcr.io/jonesjac20/blobby:${BLOBBY_IMAGE_TAG:-latest}
     command: python -m bots.simple_bot --url http://game:8000/ws --name bot --count 17
-    cpus: "0.5"
     depends_on:
       - game
     restart: unless-stopped
