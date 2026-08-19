@@ -150,9 +150,20 @@ def vision_radius(
 
 
 def classify_piece(
-    our_best: float, our_weakest: float, piece_mass: float, protected: bool
+    our_best: float,
+    our_weakest: float,
+    piece_mass: float,
+    protected: bool,
+    inert: bool = False,
 ) -> str:
-    """Threat wins if both labels could apply (split body vs one foreign disc)."""
+    """Threat wins if both labels could apply (split body vs one foreign disc).
+
+    Inert corpses cannot eat, so they are never a threat — only prey or peer.
+    """
+    if inert:
+        if our_best > piece_mass * EAT_RATIO:
+            return KIND_PREY
+        return KIND_PEER
     if piece_mass > our_weakest * EAT_RATIO:
         return KIND_THREAT
     if (not protected) and our_best > piece_mass * EAT_RATIO:
@@ -456,6 +467,7 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
         if player.get("id") == self_id:
             continue
         owner_protected = bool(player.get("protected"))
+        owner_inert = bool(player.get("inert"))
         for piece in player.get("pieces") or []:
             dist = math.hypot(piece["x"] - cx, piece["y"] - cy)
 
@@ -474,7 +486,11 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             vx, vy = _piece_velocity(piece, prev_positions, dt)
             # Classify the piece as a threat, prey, or neutral
             kind = classify_piece(
-                our_best, our_weakest, piece["mass"], owner_protected
+                our_best,
+                our_weakest,
+                piece["mass"],
+                owner_protected,
+                owner_inert,
             )
             # Calculate the approaching speed of the foreign piece
             closing = closing_speed(cx, cy, piece["x"], piece["y"], vx, vy, ovx, ovy)
@@ -483,6 +499,7 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
                     **piece,
                     "owner_id": player["id"],
                     "protected": owner_protected,
+                    "inert": owner_inert,
                     "kind": kind,
                     "closing": closing,
                     "dist": dist,
@@ -550,6 +567,9 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
     recovering_cluster = len(ours) > 1 and max_remerge > 0.0
 
     def _split_prey_ready(item: dict) -> bool:
+        # Inert never remelts. Eat any fragment we can; ignore sibling mass.
+        if item.get("inert"):
+            return True
         # parts is a list of pieces owned by the same player as the given item
         parts = by_owner.get(item["owner_id"], [item])
         if len(parts) <= 1:
@@ -582,6 +602,10 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             return False
         if not _split_prey_ready(item):
             return False
+        # Corpse pieces do not flee. If we can eat one in vision, walk it down
+        # instead of grazing pellets — they are almost always worth more.
+        if item.get("inert"):
+            return True
         hunt_cap = vis_r * personality.hunt_range
         walking = item["closing"] > -APPROACHING_SPEED and item["dist"] <= hunt_cap
         trapped = _is_trapped(item["x"], item["y"], cx, cy, width, height)
@@ -608,12 +632,14 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             if any(piece["mass"] > item["mass"] * EAT_RATIO for piece in ours)
             and _catchable(item, allow_lunge=False)
         ]
-        if punish is not None:
+        catchable = [item for item in prey if _catchable(item, allow_lunge=True)]
+        inert_meals = [item for item in catchable if item.get("inert")]
+        if inert_meals:
+            hunt_target = min(inert_meals, key=lambda item: item["dist"])
+        elif punish is not None:
             hunt_target = punish
-        else:
-            catchable = [item for item in prey if _catchable(item, allow_lunge=True)]
-            if catchable:
-                hunt_target = min(catchable, key=lambda item: item["dist"])
+        elif catchable:
+            hunt_target = min(catchable, key=lambda item: item["dist"])
 
     desired = STATE_GRAZE
     if want_flee:
@@ -666,7 +692,7 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
     elif memory.state == STATE_HUNT and hunt_target is not None:
         dx = hunt_target["x"] - cx
         dy = hunt_target["y"] - cy
-        split = split_lunge_ok(
+        split = (not hunt_target.get("inert")) and split_lunge_ok(
             ours,
             hunt_target,
             threats,

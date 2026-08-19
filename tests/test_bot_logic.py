@@ -47,12 +47,13 @@ def _piece(piece_id, x, y, mass, remerge_in=0.0):
     }
 
 
-def _player(player_id, pieces, *, protected=False, name="A"):
+def _player(player_id, pieces, *, protected=False, name="A", inert=False):
     return {
         "id": player_id,
         "name": name,
         "color": "#ffffff",
         "protected": protected,
+        "inert": inert,
         "pieces": pieces,
     }
 
@@ -71,6 +72,7 @@ def _view(
     protected=False,
     personality=None,
     prev_positions=None,
+    prev_centroid=None,
     food_index=None,
     tick_rate=30,
 ):
@@ -85,7 +87,7 @@ def _view(
         "initial_player_mass": INITIAL_PLAYER_MASS,
         "players": players,
         "prev_positions": prev_positions or {},
-        "prev_centroid": None,
+        "prev_centroid": prev_centroid,
         "food_index": index,
         "personality": personality or Personality(),
     }
@@ -101,6 +103,89 @@ def test_classify_prey_threat_peer_and_protected():
     # Peer band: 1/1.25 <= ratio <= 1.25
     assert classify_piece(100, 100, 100, False) == KIND_PEER
     assert classify_piece(100, 100, 124, False) == KIND_PEER
+
+
+def test_classify_inert_is_never_a_threat():
+    assert classify_piece(100, 100, 10000, False, True) == KIND_PEER
+    assert classify_piece(100, 100, 70, False, True) == KIND_PREY
+    assert classify_piece(100, 100, 70, True, True) == KIND_PREY
+
+
+def test_decide_hunts_a_catchable_inert_instead_of_fleeing():
+    memory = new_memory(0)
+    corpse = _player("dead", [_piece("d", 230.0, 200.0, 40)], inert=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[],
+            personality=Personality(hunt_range=1.0),
+        ),
+        memory,
+    )
+    assert memory.state != STATE_FLEE
+    assert split is False
+    assert dx > 0.0
+
+
+def test_decide_hunts_edible_inert_instead_of_grazing_pellets():
+    """A sitting corpse is worth more than nearby food, even if we were grazing away."""
+    memory = new_memory(0)
+    corpse = _player("dead", [_piece("d", 280.0, 200.0, 40)], inert=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[(180.0, 200.0)],
+            prev_centroid=(210.0, 200.0),
+            personality=Personality(hunt_range=0.6),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.0
+    assert abs(dy) < 0.2
+
+
+def test_decide_hunts_one_edible_inert_fragment_of_a_split_corpse():
+    """Inert never remelts, so sibling mass must not block a catchable fragment."""
+    memory = new_memory(0)
+    corpse = _player(
+        "dead",
+        [
+            _piece("meal", 240.0, 200.0, 40),
+            _piece("wall", 400.0, 200.0, 20000),
+        ],
+        inert=True,
+    )
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[(190.0, 200.0)],
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.0
+
+
+def test_decide_grazes_when_inert_is_too_big_to_eat():
+    memory = new_memory(0)
+    corpse = _player("dead", [_piece("d", 230.0, 200.0, 10000)], inert=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[(180.0, 200.0)],
+        ),
+        memory,
+    )
+    assert memory.state == STATE_GRAZE
+    assert split is False
+    assert dx < 0.0
 
 
 # --- graze ----------------------------------------------------------------
@@ -417,7 +502,7 @@ def _lunge_kwargs(ours, prey, threats=None, **extra):
 
 def test_split_lunge_each_checklist_line_can_fail():
     ours = [_piece("a", 200.0, 200.0, 200)]
-    prey = _piece("p", 215.0, 200.0, 40)
+    prey = _piece("p", 208.0, 200.0, 40)
     assert split_lunge_ok(**_lunge_kwargs(ours, prey)) is True
 
     tiny = [_piece("a", 200.0, 200.0, MIN_SPLIT_MASS - 1)]

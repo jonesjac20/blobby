@@ -5,7 +5,7 @@
  * 4 of the build plan:
  *
  *   { type: "state",
- *     players: [{ id, name, color, protected, pieces: [{ piece_id, x, y, mass, remerge_in }] }],
+ *     players: [{ id, name, color, protected, inert, peak_mass, pieces: [{ piece_id, x, y, mass, remerge_in }] }],
  *     food:    [{ id, x, y }] }
  *
  * Nothing in this file knows where that state came from. The Phase 1 viewer
@@ -54,6 +54,7 @@ export function playerMass(player) {
 
 /** Longest remaining remerge wait in the cluster. Zero if there is nothing to merge. */
 export function playerRemergeIn(player) {
+  if (player.inert) return 0;
   if (!player.pieces || player.pieces.length < 2) return 0;
   let wait = 0;
   for (const piece of player.pieces) {
@@ -110,6 +111,23 @@ export function colorsFromHex(hex) {
     fill: `hsla(${h}, ${s}%, ${l}%, 0.75)`,
     stroke: `hsl(${h}, ${Math.min(100, s + 5)}%, ${clamp(l - 13, 0, 100)}%)`,
     text: `hsl(${h}, ${Math.min(100, s + 15)}%, ${clamp(Math.max(l + 33, 88), 0, 100)}%)`,
+  };
+}
+
+/** Washed pastel of the parent hex so an inert corpse reads as a ghost, not a hunter. */
+export function inertColorsFromHex(hex) {
+  if (typeof hex !== "string" || !HEX_COLOR.test(hex)) return null;
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const { h, s, l } = rgbToHsl(r, g, b);
+  const pastelS = Math.min(s, 28);
+  const pastelL = clamp(Math.max(l, 78) + 8, 0, 94);
+  return {
+    hue: h,
+    fill: `hsla(${h}, ${pastelS}%, ${pastelL}%, 0.3)`,
+    stroke: `hsla(${h}, ${Math.min(100, pastelS + 8)}%, ${clamp(pastelL - 18, 0, 100)}%, 0.45)`,
+    text: `hsl(${h}, ${Math.min(100, pastelS + 10)}%, ${clamp(Math.max(pastelL, 88), 0, 100)}%)`,
   };
 }
 
@@ -332,7 +350,9 @@ function drawPieces(ctx, state, camera, viewport, labels) {
       drawOrder.push({
         player,
         piece,
-        color: colorsFromHex(player.color) || colorForId(player.id),
+        color: player.inert
+          ? inertColorsFromHex(player.color) || colorsFromHex(player.color) || colorForId(player.id)
+          : colorsFromHex(player.color) || colorForId(player.id),
       });
     }
   }
@@ -362,7 +382,7 @@ function drawPieces(ctx, state, camera, viewport, labels) {
   ctx.lineWidth = 2;
   ctx.strokeStyle = "rgba(255, 209, 102, 0.95)";
   for (const { player, piece } of drawOrder) {
-    if (!player.protected) continue;
+    if (!player.protected || player.inert) continue;
     const point = worldToScreen(camera, viewport, piece.x, piece.y);
     const radius = radiusForMass(piece.mass) * camera.scale;
     ctx.beginPath();
@@ -384,7 +404,7 @@ function drawPieces(ctx, state, camera, viewport, labels) {
   // reads instead of going blank.
   ctx.strokeStyle = LABEL_OUTLINE;
   for (const { player, piece, color } of drawOrder) {
-    if (player.pieces.length < 2) continue;
+    if (!player.inert && player.pieces.length < 2) continue;
     const point = worldToScreen(camera, viewport, piece.x, piece.y);
     const radius = radiusForMass(piece.mass) * camera.scale;
     const size = clamp(radius * 0.34, MASS_MIN_PX, MASS_MAX_PX);
@@ -412,7 +432,9 @@ function drawPieces(ctx, state, camera, viewport, labels) {
     }
     named.push({
       player,
-      color: colorsFromHex(player.color) || colorForId(player.id),
+      color: player.inert
+        ? inertColorsFromHex(player.color) || colorsFromHex(player.color) || colorForId(player.id)
+        : colorsFromHex(player.color) || colorForId(player.id),
       centroid,
       clusterTop,
       mass: playerMass(player),

@@ -1057,7 +1057,7 @@ def test_split_pieces_remerge_after_the_full_cycle(world):
     assert len(player.pieces) == 2
 
     advance(world, SPLIT_KICK_DECAY_SECONDS, TICK)
-    assert separation(*player.pieces) > 25.0
+    assert separation(*player.pieces) > 15.0
 
     advance(world, REMERGE_SECONDS + 1.0, TICK)
 

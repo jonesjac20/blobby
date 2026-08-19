@@ -60,6 +60,7 @@ let speedFloorFraction = 0.25;
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
 const massEl = document.getElementById("mass");
+const bestMassEl = document.getElementById("best-mass");
 const remergeEl = document.getElementById("remerge");
 const remergeTimeEl = document.getElementById("remerge-time");
 const protectedEl = document.getElementById("protected");
@@ -653,6 +654,10 @@ function tick(timestamp) {
   if (mode === "playing" && followed && followId === selfId) {
     hud.hidden = false;
     massEl.textContent = String(Math.round(playerMass(followed)));
+    const best = Number(followed.peak_mass);
+    bestMassEl.textContent = String(
+      Math.round(Number.isFinite(best) ? Math.max(best, playerMass(followed)) : playerMass(followed)),
+    );
     const wait = playerRemergeIn(followed);
     remergeEl.hidden = wait < 0.05;
     if (wait >= 0.05) remergeTimeEl.textContent = wait.toFixed(1);

@@ -15,7 +15,7 @@ Do not retune these in the bot. Cite the live constants, not remembered feel-pas
 - **After a one-piece split, the fragment is edible only if `M/2 > 1.25 * prey`.** Parent must be `> 2.5×` the prey piece. A 1.3× “smaller blob” is not a split target.
 - **Exponential split, one shared `last_input`.** `try_split` halves every eligible piece in one press. **Only the new piece is kicked;** the parent stays at half mass with its kick cleared. Kick displacement is `min(SPLIT_KICK_RADII * radius_for_mass(parent), split_kick_displacement_max())`, plus simultaneous steering at `speed_for_mass(half)`. Call `split_kick_speed(parent_mass)`, not a constant. The cap is `min(WORLD_WIDTH, WORLD_HEIGHT) * SPLIT_KICK_MAX_ARENA_FRACTION`. Then `REMERGE_SECONDS` (`12`) of vulnerability: eat is per-piece, so two 100s can be eaten by anyone over 125.
 - **`protected` is not prey.** Spawn invulnerability is on the player, not the piece. Splitting during the window neither forfeits nor extends it. A protected player still eats normally.
-- **No velocity on the wire.** [`serialize_state`](../server/protocol.py) sends `id`, `name`, `color`, `protected`, and `pieces[{piece_id, x, y, mass, remerge_in}]`. Closing speed is inferred from the last two `state` snapshots. Food is a separate held field, same as [`client/game.js`](../client/game.js): keep the latest `food` message and splice it onto the view.
+- **No velocity on the wire.** [`serialize_state`](../server/protocol.py) sends `id`, `name`, `color`, `protected`, `inert`, `peak_mass`, and `pieces[{piece_id, x, y, mass, remerge_in}]`. Closing speed is inferred from the last two `state` snapshots. Food is a separate held field, same as [`client/game.js`](../client/game.js): keep the latest `food` message and splice it onto the view.
 - **No pathfinding.** Source plan §7. Corner/wall avoidance is a steering bias, not A*.
 - **Near-equals are peers.** If `1/EAT_RATIO ≤ mass_ratio ≤ EAT_RATIO`, the pair is solid: neither food nor threat. A peer ram is a shove, not a kill.
 
@@ -41,9 +41,11 @@ Recompute every decision from the vision-culled view. Key off **pieces**, not pl
 
 For each foreign piece:
 
-- **Prey** if `our_best_piece.mass > piece.mass * EAT_RATIO` and the owner is not `protected`.
-- **Threat** if `piece.mass > our_weakest_piece.mass * EAT_RATIO`.
+- **Prey** if `our_best_piece.mass > piece.mass * EAT_RATIO` and the owner is not `protected`. An **inert** corpse is prey under the same mass rule even if it is huge — it cannot eat.
+- **Threat** if `piece.mass > our_weakest_piece.mass * EAT_RATIO` and the owner is not inert.
 - **Peer** otherwise.
+
+`inert` rides `state` next to `protected`. Spawn-protected is not prey; inert is never a threat. A catchable inert piece is a **free meal**: Hunt it on sight (no closing-speed or remelt wait — a corpse does not flee or fuse) and prefer it over Graze pellets. Do not split-lunge into it.
 
 A threat or prey is **approaching** if inferred radial speed toward us exceeds `APPROACHING_SPEED` (feel parameter). Flee from approaching threats, not from every larger disc that happens to be on screen and receding.
 
@@ -85,9 +87,10 @@ No speed-splits at range — they feed the predator. One exception, still inside
 
 A catchable prey in vision, and not Flee/Recover (unless that free meal). Catchable means one of:
 
-- Prey is **not fleeing** (closing or grazing) and we can intercept by walking. The only chase that works, because we are slower if they run.
+- **Inert** we can eat. Always. Closing speed, hunt-range, and sibling remelt do not apply — the disc does not run, and fragments never fuse back into a threat. Prefer this over live prey and over Graze.
+- Prey is **not fleeing** (closing or grazing) and we can intercept by walking. The only chase that works against a live blob, because we are slower if they run.
 - Prey is **trapped** (a wall or corner between them and us).
-- **Split-lunge** passes the [checklist](#split-lunge-checklist) below.
+- **Split-lunge** passes the [checklist](#split-lunge-checklist) below. Not used on inert.
 - **Punish:** a player who was a threat is now split into pieces we can eat, `remerge_in` above `PUNISH_REMERGE_FLOOR`, and no remaining threatening piece is on a collision course. This is the Flee → Hunt flip, not a fifth state. See [Tactics](#tactics-that-are-not-new-states).
 
 If none of those, do not enter Hunt; keep Grazing. Futile waddling at a fleeing smaller blob is how bots look broken.

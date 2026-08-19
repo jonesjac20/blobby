@@ -53,7 +53,7 @@ WORLD_WIDTH = 2000
 WORLD_HEIGHT = 2000
 
 FOOD_COUNT = 1600
-FOOD_MASS = 5
+FOOD_MASS = 8
 # Cell size for the eat-scan skip-list (feel-pass A6). Pellets are bucketed once
 # per `_eat_food`; each piece queries a padded AABB and the scan still walks
 # `world.food` in dict order so eats stay seed-identical.
@@ -68,6 +68,22 @@ INITIAL_PLAYER_MASS = 50
 # tick. This is the window to eat some food or run. A feel parameter like the
 # cluster values - judge it on a screen in Phase 4, not here.
 SPAWN_INVULN_SECONDS = 5.0
+
+# Mass caps. A snowballing life peels down to remnant mass and dumps the
+# rest into a socket-less inert player. No age trigger: mass does not drain
+# except by being eaten. Bots cap earlier than humans so a 30-bot lobby
+# recycles giants without waiting for a player-sized snowball.
+BOT_BURST_MASS = 55000.0
+BOT_BURST_REMNANT_MASS = 1000.0
+PLAYER_BURST_MASS = 75000.0
+PLAYER_BURST_REMNANT_MASS = 1500.0
+# Inert corpses auto-split on this interval. Live REMERGE_SECONDS is unrelated.
+BURST_SPLIT_SECONDS = 12.0
+# Tick-loop fuse: unconstrained doubling from ~54k mass would stall 30Hz.
+BURST_PIECE_GUARD = 256
+# Extra rim-to-rim gap when placing an inert fragment, as 2 * radius(400), so
+# a medium blob can pass between the halves.
+BURST_NAV_REFERENCE_MASS = 400.0
 
 # World units per second for a piece at INITIAL_PLAYER_MASS. Lighter pieces
 # move faster (`speed_for_mass`), so a split fragment can travel more than
@@ -129,6 +145,11 @@ def speed_for_mass(mass: float) -> float:
         return BASE_SPEED
     raw = BASE_SPEED * (INITIAL_PLAYER_MASS / mass) ** SPEED_FALLOFF
     return max(raw, BASE_SPEED * SPEED_FLOOR_FRACTION)
+
+
+def burst_nav_gap() -> float:
+    """World-unit gap between inert half-discs so a medium blob can pass."""
+    return 2.0 * math.sqrt(max(BURST_NAV_REFERENCE_MASS, 0.0) / math.pi)
 
 
 def split_kick_displacement_max() -> float:

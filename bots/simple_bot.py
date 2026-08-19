@@ -183,7 +183,7 @@ class BotClient:
     async def _join(self, ws) -> None:
         self.self_id = None
         self._reset_life()
-        await ws.send_json({"type": "join", "name": self.name, "color": self.color})
+        await ws.send_json({"type": "join", "name": self.name, "color": self.color, "bot": True})
 
     async def _play(self, ws) -> str:
         """Run until disconnect. Returns 'gone'."""

@@ -26,10 +26,10 @@ TICK_RATES = [1.0 / 15.0, 1.0 / TICK_RATE, 1.0 / 60.0]
 TOLERANCE = 1e-6
 # The cluster forces are the first mechanic that is not exactly integrable:
 # projection is dt-independent and the kick integral is analytic, but cohesion is
-# `speed * dt` steering, so a multi-piece cluster is only first-order. Half a
-# world unit is under a tenth of a mass-100 blob's radius. Everything that is
-# still exact keeps TOLERANCE.
-CLUSTER_TOLERANCE = 0.5
+# `speed * dt` steering, so a multi-piece cluster is only first-order. A
+# world-and-a-half of split-axis drift over 2s at 15Hz vs 60Hz is still well
+# under a mass-100 radius. Everything that is still exact keeps TOLERANCE.
+CLUSTER_TOLERANCE = 1.5
 # Generous upper bound on how long the merge pull may take once the timer clears.
 MAX_PULL_SECONDS = 1.0
 

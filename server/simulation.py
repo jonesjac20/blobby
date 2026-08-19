@@ -13,9 +13,16 @@ players' pieces are solid unless one can eat the other; eating and remerging
 each need the deeper EAT_OVERLAP and MERGE_OVERLAP.
 """
 
+import logging
 import math
 
 from server.config import (
+    BOT_BURST_MASS,
+    BOT_BURST_REMNANT_MASS,
+    BURST_PIECE_GUARD,
+    BURST_SPLIT_SECONDS,
+    PLAYER_BURST_MASS,
+    PLAYER_BURST_REMNANT_MASS,
     COHESION_SPEED,
     EAT_OVERLAP,
     EAT_RATIO,
@@ -32,11 +39,14 @@ from server.config import (
     SEPARATION_PASSES,
     SPAWN_INVULN_SECONDS,
     SPLIT_KICK_DECAY_SECONDS,
+    burst_nav_gap,
     split_kick_speed,
     speed_for_mass,
 )
 from server.models import Piece, Player
 from server.world import World, clamp_body_position
+
+log = logging.getLogger("blobby")
 
 
 def radius_for_mass(mass: float) -> float:
@@ -144,6 +154,10 @@ def _protected_player_ids(world: World) -> set[str]:
     }
 
 
+def _inert_player_ids(world: World) -> set[str]:
+    return {player.id for player in world.players.values() if player.inert}
+
+
 def _kick_active_during_tick(previous_now: float, piece: Piece) -> bool:
     """Whether this piece's split kick contributes displacement this tick.
 
@@ -169,8 +183,10 @@ def step(world: World, dt: float) -> None:
     _resolve_collisions(world, previous_positions)
     _eat_food(world, previous_positions)
     _eat_other_players(world)
+    _apply_mass_bursts(world)
     _decay_split_kicks(world)
     _remerge_pieces(world)
+    _split_inert(world)
     _refill_food(world)
 
 
@@ -221,6 +237,8 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
     still returns, and the heavy core (sitting on the centroid) barely moves.
     """
     for player in world.players.values():
+        if player.inert:
+            continue
         pieces = player.pieces
         if len(pieces) < 2:
             continue
@@ -310,24 +328,38 @@ def _resolve_collisions(
         for piece in player.pieces
     ]
     protected = _protected_player_ids(world)
+    inert = _inert_player_ids(world)
 
     for _ in range(SEPARATION_PASSES):
         for i, (owner_a, a) in enumerate(bodies):
             for j in range(i + 1, len(bodies)):
                 owner_b, b = bodies[j]
                 if owner_a == owner_b:
+                    if owner_a in inert:
+                        # Keep the burst nav gap; do not settle at OWN_PIECE_OVERLAP.
+                        target = _distance_for_engulfment(a, b, 0.0) + burst_nav_gap()
+                        _project_apart(a, b, target, j)
+                        continue
                     # A mergeable pair is trying to sink into each other.
                     if _merge_ready(world, a) and _merge_ready(world, b):
                         continue
                     target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
                     _project_apart(a, b, target, j)
-                elif (_can_eat(a, b) and owner_b not in protected) or (
-                    _can_eat(b, a) and owner_a not in protected
+                elif (
+                    owner_a not in inert
+                    and owner_b not in protected
+                    and _can_eat(a, b)
+                ) or (
+                    owner_b not in inert
+                    and owner_a not in protected
+                    and _can_eat(b, a)
                 ):
                     # Never projected, or the predator could never reach the
                     # EAT_OVERLAP depth that `_eat_other_players` waits for.
                     # A spawn-protected prey is not a live meal, so that pair
                     # stays solid and the predator is shoved off instead.
+                    # Inert is never a predator, so a giant corpse stays solid
+                    # against anyone too small to eat it.
                     continue
                 else:
                     target = _distance_for_engulfment(a, b, 0.0)
@@ -495,6 +527,9 @@ def _eat_food(
     grid = _food_grid(world)
     eaten: set[str] = set()
     for player in world.players.values():
+        # inert players do not eat
+        if player.inert:
+            continue
         for piece in player.pieces:
             radius = radius_for_mass(piece.mass)
             start = previous_positions.get(piece.piece_id, (piece.x, piece.y))
@@ -569,20 +604,23 @@ def _eat_other_players(world: World) -> None:
                 for b in defender.pieces:
                     if b.piece_id in eaten or engulfment(a, b) < EAT_OVERLAP:
                         continue
-                    if defender_edible and _can_eat(a, b):
+                    if defender_edible and not attacker.inert and _can_eat(a, b):
                         a.mass += b.mass
                         eaten.add(b.piece_id)
-                    elif attacker_edible and _can_eat(b, a):
+                    elif attacker_edible and not defender.inert and _can_eat(b, a):
                         b.mass += a.mass
                         eaten.add(a.piece_id)
                         break
 
-    # Every player's total at the high-water mark of this tick: food and kills
-    # already counted, losses not yet taken. A player eaten below still holds
-    # the piece that is about to be removed, so this is the last mass it really
-    # reached -- the only place that number exists before it is gone.
+    # Life high-water mark: food and kills already counted, losses and a burst
+    # peel not yet taken. Never decreases, so a 75k burst still reports 75k
+    # after the remnant is 1500, and a player eaten below still holds the
+    # piece that is about to be removed.
     for player in players:
-        player.last_total_mass = sum(piece.mass for piece in player.pieces)
+        player.last_total_mass = max(
+            player.last_total_mass,
+            sum(piece.mass for piece in player.pieces),
+        )
 
     if eaten:
         for player in players:
@@ -605,6 +643,8 @@ def _remerge_pieces(world: World) -> None:
     in `_cluster_forces` has to drag them the rest of the way.
     """
     for player in world.players.values():
+        if player.inert:
+            continue
         merged = True
         while merged:
             merged = False
@@ -677,4 +717,128 @@ def try_split(world: World, player: Player) -> int:
         )
         created += 1
 
+    return created
+
+
+def _player_centroid(player: Player) -> tuple[float, float]:
+    if not player.pieces:
+        return 0.0, 0.0
+    return _cluster_centroid(player.pieces)
+
+
+def _burst_caps(player: Player) -> tuple[float, float] | None:
+    """Mass cap and remnant for this life, or None if it never bursts."""
+    if player.inert:
+        return None
+    if player.bot:
+        return BOT_BURST_MASS, BOT_BURST_REMNANT_MASS
+    return PLAYER_BURST_MASS, PLAYER_BURST_REMNANT_MASS
+
+
+def _apply_mass_bursts(world: World) -> None:
+    """Peel anyone over their cap down to remnant; excess becomes inert."""
+    for player in list(world.players.values()):
+        caps = _burst_caps(player)
+        if caps is None:
+            continue
+        cap, remnant = caps
+        total = sum(piece.mass for piece in player.pieces)
+        if total < cap:
+            continue
+        _burst_player(world, player, remnant)
+
+
+def _burst_player(world: World, player: Player, remnant_mass: float) -> None:
+    # Respawns the player as the remnant mass, excess remains as inert cell (corpse)
+    from server.protocol import unique_name
+
+    total = sum(piece.mass for piece in player.pieces)
+    remnant = min(remnant_mass, total)
+    excess = total - remnant
+    if excess <= 0.0 or not player.pieces:
+        return
+    player.last_total_mass = max(player.last_total_mass, total)
+    cx, cy = _player_centroid(player)
+    rx, ry = clamp_body_position(cx, cy, remnant)
+    ix, iy = clamp_body_position(cx, cy, excess)
+
+    player.pieces = [
+        Piece(piece_id=world.new_id(), x=rx, y=ry, mass=remnant)
+    ]
+
+    corpse = world.spawn_player(
+        unique_name(world, player.name),
+        x=ix,
+        y=iy,
+        mass=excess,
+        color=player.color,
+        inert=True,
+    )
+    corpse.last_burst_split = world.now
+
+
+def _split_inert(world: World) -> None:
+    """Halve every inert piece with mass >= 2, every BURST_SPLIT_SECONDS."""
+    # Extra rim-to-rim gap when placing an inert fragment, as 2 * radius(400), so
+    # a medium blob can pass between the halves. Meant to create "canyons" between corpses.
+    gap = burst_nav_gap()
+    for player in world.players.values():
+        if not player.inert:
+            continue
+        if world.now - player.last_burst_split < BURST_SPLIT_SECONDS:
+            continue
+        if len(player.pieces) >= BURST_PIECE_GUARD:
+            log.warning(
+                "inert burst piece guard hit name=%s pieces=%d",
+                player.name,
+                len(player.pieces),
+            )
+            player.last_burst_split = world.now
+            continue
+        created = _inert_split(world, player, gap)
+        if created or all(piece.mass < 2.0 for piece in player.pieces):
+            player.last_burst_split = world.now
+
+
+def _inert_split(world: World, player: Player, gap: float) -> int:
+    """Split every current piece whose half would be at least 1. Ignore MAX_PIECES."""
+    created = 0
+    parents = list(player.pieces)
+    for parent in parents:
+        if len(player.pieces) >= BURST_PIECE_GUARD:
+            log.warning(
+                "inert burst piece guard hit name=%s pieces=%d",
+                player.name,
+                len(player.pieces),
+            )
+            break
+        if parent.mass < 2.0:
+            continue
+        parent_mass = parent.mass
+        half = parent_mass / 2.0
+        angle = world.rng.uniform(0.0, 2.0 * math.pi)
+        ux, uy = math.cos(angle), math.sin(angle)
+        offset = 2.0 * radius_for_mass(half) + gap
+
+        parent.mass = half
+        parent.split_time = world.now
+        parent.vx = parent.vy = 0.0
+        parent.initial_kick_vx = parent.initial_kick_vy = 0.0
+
+        kick = split_kick_speed(parent_mass)
+        child = Piece(
+            piece_id=world.new_id(),
+            x=parent.x + ux * offset,
+            y=parent.y + uy * offset,
+            mass=half,
+            vx=kick * ux,
+            vy=kick * uy,
+            initial_kick_vx=kick * ux,
+            initial_kick_vy=kick * uy,
+            split_time=world.now,
+        )
+        child.x, child.y = clamp_body_position(child.x, child.y, child.mass)
+        parent.x, parent.y = clamp_body_position(parent.x, parent.y, parent.mass)
+        player.pieces.append(child)
+        created += 1
     return created

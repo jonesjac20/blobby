@@ -54,6 +54,9 @@ class World:
         y: float | None = None,
         mass: float = INITIAL_PLAYER_MASS,
         color: str = DEFAULT_COLOR,
+        *,
+        bot: bool = False,
+        inert: bool = False,
     ) -> Player:
         if x is None:
             x = self.rng.uniform(0.0, WORLD_WIDTH)
@@ -65,6 +68,9 @@ class World:
             name=name,
             pieces=[Piece(piece_id=self.new_id(), x=x, y=y, mass=mass)],
             color=color,
+            bot=bot,
+            inert=inert,
+            last_total_mass=mass,
         )
         self.players[player.id] = player
         return player
