@@ -225,7 +225,8 @@ export function screenToWorld(camera, viewport, x, y) {
  *
  * The result therefore carries `next`'s set of pieces with blended positions.
  * A caller that needs one snapshot exactly as recorded should render it
- * directly rather than asking for alpha 0.
+ * directly rather than asking for alpha 0. `alpha > 1` extrapolates along the
+ * last delta so a late snapshot does not freeze every other blob in place.
  */
 export function interpolateStates(previous, next, alpha) {
   if (!previous || previous === next) return next;

@@ -13,8 +13,8 @@ TICK_RATE = 30
 MIN_SPLIT_MASS = 35
 MAX_PIECES = 8
 EAT_RATIO = 1.25
-REMERGE_SECONDS = 12
-SPLIT_KICK_DECAY_SECONDS = 0.5
+REMERGE_SECONDS = 10
+SPLIT_KICK_DECAY_SECONDS = 3
 
 # --- simulation clock ------------------------------------------------------
 #
