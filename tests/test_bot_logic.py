@@ -47,12 +47,13 @@ def _piece(piece_id, x, y, mass, remerge_in=0.0):
     }
 
 
-def _player(player_id, pieces, *, protected=False, name="A"):
+def _player(player_id, pieces, *, protected=False, name="A", inert=False):
     return {
         "id": player_id,
         "name": name,
         "color": "#ffffff",
         "protected": protected,
+        "inert": inert,
         "pieces": pieces,
     }
 
@@ -71,6 +72,7 @@ def _view(
     protected=False,
     personality=None,
     prev_positions=None,
+    prev_centroid=None,
     food_index=None,
     tick_rate=30,
 ):
@@ -85,7 +87,7 @@ def _view(
         "initial_player_mass": INITIAL_PLAYER_MASS,
         "players": players,
         "prev_positions": prev_positions or {},
-        "prev_centroid": None,
+        "prev_centroid": prev_centroid,
         "food_index": index,
         "personality": personality or Personality(),
     }
@@ -101,6 +103,89 @@ def test_classify_prey_threat_peer_and_protected():
     # Peer band: 1/1.25 <= ratio <= 1.25
     assert classify_piece(100, 100, 100, False) == KIND_PEER
     assert classify_piece(100, 100, 124, False) == KIND_PEER
+
+
+def test_classify_inert_is_never_a_threat():
+    assert classify_piece(100, 100, 10000, False, True) == KIND_PEER
+    assert classify_piece(100, 100, 70, False, True) == KIND_PREY
+    assert classify_piece(100, 100, 70, True, True) == KIND_PREY
+
+
+def test_decide_hunts_a_catchable_inert_instead_of_fleeing():
+    memory = new_memory(0)
+    corpse = _player("dead", [_piece("d", 230.0, 200.0, 40)], inert=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[],
+            personality=Personality(hunt_range=1.0),
+        ),
+        memory,
+    )
+    assert memory.state != STATE_FLEE
+    assert split is False
+    assert dx > 0.0
+
+
+def test_decide_hunts_edible_inert_instead_of_grazing_pellets():
+    """A sitting corpse is worth more than nearby food, even if we were grazing away."""
+    memory = new_memory(0)
+    corpse = _player("dead", [_piece("d", 280.0, 200.0, 40)], inert=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[(180.0, 200.0)],
+            prev_centroid=(210.0, 200.0),
+            personality=Personality(hunt_range=0.6),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.0
+    assert abs(dy) < 0.2
+
+
+def test_decide_hunts_one_edible_inert_fragment_of_a_split_corpse():
+    """Inert never remelts, so sibling mass must not block a catchable fragment."""
+    memory = new_memory(0)
+    corpse = _player(
+        "dead",
+        [
+            _piece("meal", 240.0, 200.0, 40),
+            _piece("wall", 400.0, 200.0, 20000),
+        ],
+        inert=True,
+    )
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[(190.0, 200.0)],
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.0
+
+
+def test_decide_grazes_when_inert_is_too_big_to_eat():
+    memory = new_memory(0)
+    corpse = _player("dead", [_piece("d", 230.0, 200.0, 10000)], inert=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[corpse],
+            food=[(180.0, 200.0)],
+        ),
+        memory,
+    )
+    assert memory.state == STATE_GRAZE
+    assert split is False
+    assert dx < 0.0
 
 
 # --- graze ----------------------------------------------------------------
@@ -417,7 +502,7 @@ def _lunge_kwargs(ours, prey, threats=None, **extra):
 
 def test_split_lunge_each_checklist_line_can_fail():
     ours = [_piece("a", 200.0, 200.0, 200)]
-    prey = _piece("p", 215.0, 200.0, 40)
+    prey = _piece("p", 208.0, 200.0, 40)
     assert split_lunge_ok(**_lunge_kwargs(ours, prey)) is True
 
     tiny = [_piece("a", 200.0, 200.0, MIN_SPLIT_MASS - 1)]
@@ -433,6 +518,10 @@ def test_split_lunge_each_checklist_line_can_fail():
     far = _piece("p", 800.0, 200.0, 20)
     assert split_lunge_ok(**_lunge_kwargs(ours, far, vision_r=100.0)) is False
 
+    # Kick covers ~24wu at mass 200. Walk-assist must not make a 80wu gap a lunge.
+    mid = _piece("p", 280.0, 200.0, 40)
+    assert split_lunge_ok(**_lunge_kwargs(ours, mid, vision_r=400.0)) is False
+
     threat = [_piece("t", 220.0, 200.0, 400)]
     assert split_lunge_ok(**_lunge_kwargs(ours, prey, threats=threat)) is False
 
@@ -444,6 +533,64 @@ def test_split_lunge_each_checklist_line_can_fail():
         )
         is False
     )
+
+
+def test_hunt_walks_until_kick_range_then_does_not_split_early():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey],
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.9
+    assert abs(dy) < 0.2
+
+
+def test_hunt_lunge_aims_hitter_at_prey():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 220.0, 200.0, 40)])
+    dx, dy, split = decide(
+        _view(
+            [
+                _piece("hitter", 200.0, 200.0, 200),
+                _piece("other", 200.0, 280.0, 80),
+            ],
+            others=[prey],
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is True
+    assert dx > 0.9
+    assert abs(dy) < 0.2
+
+
+def test_hunt_lunge_is_not_rotated_by_a_protected_meal():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 220.0, 200.0, 40)])
+    shield = _player("s", [_piece("s", 200.0, 205.0, 20)], protected=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 200)],
+            others=[prey, shield],
+            food=[(200.0, 300.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is True
+    assert dx > 0.9
+    assert abs(dy) < 0.2
 
 
 def test_sacrifice_checklist_and_timid_disables_it():
@@ -499,6 +646,95 @@ def test_spawn_window_does_not_lunge():
     assert memory.state != STATE_HUNT
 
 
+def test_spawn_window_flees_a_stationary_giant_outside_old_panic():
+    """Protected + in-vision giant that is not approaching and outside panic+disc."""
+    memory = new_memory(0)
+    giant = _player("g", [_piece("g", 280.0, 200.0, 200)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[giant],
+            food=[(210.0, 200.0)],
+            protected=True,
+        ),
+        memory,
+    )
+    assert memory.state == STATE_FLEE
+    assert split is False
+    assert dx < 0
+    assert (dx, dy) != (0.0, 0.0)
+
+
+def test_spawn_window_overlapping_giant_flees_without_sacrifice():
+    memory = new_memory(0)
+    giant = _player("g", [_piece("g", 200.0, 200.0, 500)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[giant],
+            food=[(190.0, 200.0)],
+            protected=True,
+            personality=Personality(split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_FLEE
+    assert split is False
+    assert (dx, dy) != (0.0, 0.0)
+
+
+def test_spawn_window_overlapping_peer_does_not_sit():
+    """Camper dodge used to emit (0, 0) when spawned on a same-mass body."""
+    memory = new_memory(0)
+    peer = _player("p", [_piece("p", 200.0, 200.0, 50)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[peer],
+            food=[(190.0, 200.0)],
+            protected=True,
+        ),
+        memory,
+    )
+    assert memory.state == STATE_GRAZE
+    assert split is False
+    assert (dx, dy) != (0.0, 0.0)
+
+
+def test_unprotected_flees_when_a_giant_disc_covers_us():
+    """Panic includes the threat radius, so covering a spawn is live even unshielded."""
+    memory = new_memory(0)
+    giant = _player("g", [_piece("g", 220.0, 200.0, 5000)])
+    dx, dy, _ = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[giant],
+            food=[(190.0, 200.0)],
+        ),
+        memory,
+    )
+    assert memory.state == STATE_FLEE
+    assert dx < 0
+
+
+def test_hunter_steers_off_an_overlapping_protected_meal():
+    memory = new_memory(0)
+    shielded = _player("s", [_piece("s", 200.0, 200.0, 20)], protected=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[shielded],
+            food=[(200.0, 300.0)],
+            personality=Personality(hunt_range=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_GRAZE
+    assert split is False
+    assert dx > 0.0
+    assert (dx, dy) != (0.0, 0.0)
+
+
 def test_futile_chase_of_fleeing_prey_stays_graze():
     memory = new_memory(0)
     prey = _player("p", [_piece("p", 350.0, 200.0, 20)])
@@ -548,6 +784,7 @@ def test_join_holds_food_and_sends_input_after_welcome():
         world.food["p"] = __import__("server.models", fromlist=["Food"]).Food(
             id="p", x=100, y=100
         )
+        world.food_epoch += 1
         app = create_app(world, autotick=False)
         async with TestServer(app) as server:
             async with TestClient(server) as client:
@@ -584,6 +821,7 @@ def test_game_over_does_not_join_until_respawn_delay(monkeypatch):
     async def body():
         world = World(seed=0, food_target=0)
         world.food["pellet"] = Food(id="pellet", x=10, y=10)
+        world.food_epoch += 1
         app = create_app(world, autotick=False)
         async with TestServer(app) as server:
             async with TestClient(server) as client:

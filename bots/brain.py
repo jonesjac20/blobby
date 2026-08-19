@@ -20,7 +20,6 @@ from server.config import (
     WORLD_HEIGHT,
     WORLD_WIDTH,
     split_kick_speed,
-    speed_for_mass,
 )
 from server.simulation import radius_for_mass
 
@@ -59,7 +58,7 @@ class Personality:
     flee_padding: float = 0.0
 
 
-# Cycle these so `--count 30` is not a clone army.
+# Cycle these so `--count 17` is not a clone army.
 PERSONALITIES: tuple[Personality, ...] = (
     Personality(1.0, 0.85, 1.0, 0.0),
     Personality(1.2, 0.7, 0.0, 30.0),
@@ -150,9 +149,20 @@ def vision_radius(
 
 
 def classify_piece(
-    our_best: float, our_weakest: float, piece_mass: float, protected: bool
+    our_best: float,
+    our_weakest: float,
+    piece_mass: float,
+    protected: bool,
+    inert: bool = False,
 ) -> str:
-    """Threat wins if both labels could apply (split body vs one foreign disc)."""
+    """Threat wins if both labels could apply (split body vs one foreign disc).
+
+    Inert corpses cannot eat, so they are never a threat — only prey or peer.
+    """
+    if inert:
+        if our_best > piece_mass * EAT_RATIO:
+            return KIND_PREY
+        return KIND_PEER
     if piece_mass > our_weakest * EAT_RATIO:
         return KIND_THREAT
     if (not protected) and our_best > piece_mass * EAT_RATIO:
@@ -209,6 +219,39 @@ def _wall_repulsion(
     return dx, dy
 
 
+def _fallback_steer(
+    dx: float, dy: float, wall_x: float = 0.0, wall_y: float = 0.0
+) -> tuple[float, float]:
+    """Overlapping a body is not 'nothing to steer toward'."""
+    if dx == 0.0 and dy == 0.0:
+        return (wall_x or 1.0), wall_y
+    return dx, dy
+
+
+def _shield_repulsion(
+    cx: float, cy: float, foreign: list[dict], our_best: float
+) -> tuple[float, float]:
+    """Steer off spawn-protected meals so we do not sit on the shield."""
+    dx = dy = 0.0
+    for item in foreign:
+        if not item.get("protected"):
+            continue
+        if not (our_best > item["mass"] * EAT_RATIO):
+            continue
+        away_x = cx - item["x"]
+        away_y = cy - item["y"]
+        dist = item["dist"]
+        keep = radius_for_mass(item["mass"]) + radius_for_mass(our_best)
+        if dist < 1e-9:
+            dx += keep
+            continue
+        if dist < keep:
+            strength = keep - dist
+            dx += (away_x / dist) * strength
+            dy += (away_y / dist) * strength
+    return dx, dy
+
+
 def _kick_hits_wall(
     x: float,
     y: float,
@@ -262,6 +305,16 @@ def _kick_displacement(parent_mass: float) -> float:
     return split_kick_speed(parent_mass) * SPLIT_KICK_DECAY_SECONDS / 2.0
 
 
+def _lunge_hitter(ours: list[dict], prey: dict) -> dict | None:
+    eligible = [piece for piece in ours if piece["mass"] >= MIN_SPLIT_MASS]
+    if not eligible:
+        return None
+    return min(
+        eligible,
+        key=lambda piece: (piece["x"] - prey["x"]) ** 2 + (piece["y"] - prey["y"]) ** 2,
+    )
+
+
 def split_lunge_ok(
     ours: list[dict],
     prey: dict,
@@ -274,22 +327,22 @@ def split_lunge_ok(
     cx: float,
     cy: float,
 ) -> bool:
+    del vision_r, cx, cy
     if personality.split_willingness <= 0.0 or protected:
         return False
     if in_recover:
         return False
-    eligible = [piece for piece in ours if piece["mass"] >= MIN_SPLIT_MASS]
-    if not eligible or len(ours) >= MAX_PIECES:
+    if len(ours) >= MAX_PIECES:
         return False
     if prey.get("protected"):
         return False
-    hitter = min(
-        eligible,
-        key=lambda piece: (piece["x"] - prey["x"]) ** 2 + (piece["y"] - prey["y"]) ** 2,
-    )
+    hitter = _lunge_hitter(ours, prey)
+    if hitter is None:
+        return False
     half = hitter["mass"] / 2.0
     if not (half > prey["mass"] * EAT_RATIO):
         return False
+    eligible = [piece for piece in ours if piece["mass"] >= MIN_SPLIT_MASS]
     halves = [piece["mass"] / 2.0 for piece in eligible]
     if len(eligible) > 1:
         for half_mass in halves:
@@ -302,18 +355,7 @@ def split_lunge_ok(
                 return False
     dist = math.hypot(hitter["x"] - prey["x"], hitter["y"] - prey["y"])
     need = max(0.0, dist - radius_for_mass(half))
-    window = SPLIT_KICK_DECAY_SECONDS
-    our_travel = _kick_displacement(hitter["mass"]) + speed_for_mass(half) * window
-    their_escape = speed_for_mass(prey["mass"]) * window
-    prey_from_us = math.hypot(prey["x"] - cx, prey["y"] - cy)
-    room = max(0.0, vision_r - prey_from_us)
-    if speed_for_mass(prey["mass"]) > 0.0:
-        # t_edge is the time it takes for the prey to reach the edge of our vision radius
-        t_edge = room / speed_for_mass(prey["mass"])
-        window = min(window, t_edge) if t_edge > 0.0 else window
-        our_travel = _kick_displacement(hitter["mass"]) + speed_for_mass(half) * window
-        their_escape = speed_for_mass(prey["mass"]) * window
-    return our_travel - their_escape >= need
+    return need <= _kick_displacement(hitter["mass"])
 
 
 def sacrifice_ok(
@@ -456,6 +498,7 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
         if player.get("id") == self_id:
             continue
         owner_protected = bool(player.get("protected"))
+        owner_inert = bool(player.get("inert"))
         for piece in player.get("pieces") or []:
             dist = math.hypot(piece["x"] - cx, piece["y"] - cy)
 
@@ -474,7 +517,11 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             vx, vy = _piece_velocity(piece, prev_positions, dt)
             # Classify the piece as a threat, prey, or neutral
             kind = classify_piece(
-                our_best, our_weakest, piece["mass"], owner_protected
+                our_best,
+                our_weakest,
+                piece["mass"],
+                owner_protected,
+                owner_inert,
             )
             # Calculate the approaching speed of the foreign piece
             closing = closing_speed(cx, cy, piece["x"], piece["y"], vx, vy, ovx, ovy)
@@ -483,6 +530,7 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
                     **piece,
                     "owner_id": player["id"],
                     "protected": owner_protected,
+                    "inert": owner_inert,
                     "kind": kind,
                     "closing": closing,
                     "dist": dist,
@@ -511,10 +559,12 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
 
     live_threat = None
     for item in threats:
+        in_reach = item["dist"] <= panic_r + radius_for_mass(item["mass"])
         dangerous = (
-            mixed_cluster
+            protected
+            or mixed_cluster
             or item["closing"] > APPROACHING_SPEED
-            or item["dist"] <= panic_r
+            or in_reach
         )
         if dangerous:
             if live_threat is None or item["mass"] > live_threat["mass"]:
@@ -550,6 +600,9 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
     recovering_cluster = len(ours) > 1 and max_remerge > 0.0
 
     def _split_prey_ready(item: dict) -> bool:
+        # Inert never remelts. Eat any fragment we can; ignore sibling mass.
+        if item.get("inert"):
+            return True
         # parts is a list of pieces owned by the same player as the given item
         parts = by_owner.get(item["owner_id"], [item])
         if len(parts) <= 1:
@@ -582,6 +635,10 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             return False
         if not _split_prey_ready(item):
             return False
+        # Corpse pieces do not flee. If we can eat one in vision, walk it down
+        # instead of grazing pellets — they are almost always worth more.
+        if item.get("inert"):
+            return True
         hunt_cap = vis_r * personality.hunt_range
         walking = item["closing"] > -APPROACHING_SPEED and item["dist"] <= hunt_cap
         trapped = _is_trapped(item["x"], item["y"], cx, cy, width, height)
@@ -608,12 +665,14 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             if any(piece["mass"] > item["mass"] * EAT_RATIO for piece in ours)
             and _catchable(item, allow_lunge=False)
         ]
-        if punish is not None:
+        catchable = [item for item in prey if _catchable(item, allow_lunge=True)]
+        inert_meals = [item for item in catchable if item.get("inert")]
+        if inert_meals:
+            hunt_target = min(inert_meals, key=lambda item: item["dist"])
+        elif punish is not None:
             hunt_target = punish
-        else:
-            catchable = [item for item in prey if _catchable(item, allow_lunge=True)]
-            if catchable:
-                hunt_target = min(catchable, key=lambda item: item["dist"])
+        elif catchable:
+            hunt_target = min(catchable, key=lambda item: item["dist"])
 
     desired = STATE_GRAZE
     if want_flee:
@@ -648,9 +707,8 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
         away_x, away_y = cx - tx, cy - ty
         wall_x, wall_y = _wall_repulsion(cx, cy, width, height)
         dx, dy = away_x + wall_x, away_y + wall_y
-        if dx == 0.0 and dy == 0.0:
-            dx, dy = wall_x or 1.0, wall_y
-        split = sacrifice_ok(
+        dx, dy = _fallback_steer(dx, dy, wall_x, wall_y)
+        split = (not protected) and sacrifice_ok(
             ours,
             threats,
             prev_positions,
@@ -664,21 +722,37 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             ovy,
         )
     elif memory.state == STATE_HUNT and hunt_target is not None:
-        dx = hunt_target["x"] - cx
-        dy = hunt_target["y"] - cy
-        split = split_lunge_ok(
-            ours,
-            hunt_target,
-            threats,
-            personality,
-            protected=protected,
-            in_recover=False,
-            vision_r=vis_r,
-            cx=cx,
-            cy=cy,
-        ) and personality.split_willingness > 0.0
+        lunge = (
+            (not hunt_target.get("inert"))
+            and split_lunge_ok(
+                ours,
+                hunt_target,
+                threats,
+                personality,
+                protected=protected,
+                in_recover=False,
+                vision_r=vis_r,
+                cx=cx,
+                cy=cy,
+            )
+            and personality.split_willingness > 0.0
+        )
         if recovering_cluster and hunt_target in free_meals:
-            split = False
+            lunge = False
+        split = lunge
+        if lunge:
+            hitter = _lunge_hitter(ours, hunt_target)
+            aim = hitter if hitter is not None else {"x": cx, "y": cy}
+            dx = hunt_target["x"] - aim["x"]
+            dy = hunt_target["y"] - aim["y"]
+            dx, dy = _fallback_steer(dx, dy)
+        else:
+            dx = hunt_target["x"] - cx
+            dy = hunt_target["y"] - cy
+            sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
+            dx += sx
+            dy += sy
+            dx, dy = _fallback_steer(dx, dy)
     elif memory.state == STATE_RECOVER:
         target = _pick_graze_target(cx, cy, food_index, memory)
         if target is not None:
@@ -710,9 +784,13 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
                 dx, dy = target[0] - cx, target[1] - cy
             else:
                 dx, dy = _wander(cx, cy, width, height, vis_r, memory)
+        sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
+        dx += sx
+        dy += sy
         wall_x, wall_y = _wall_repulsion(cx, cy, width, height, margin=40.0)
         dx += 0.2 * wall_x
         dy += 0.2 * wall_y
+        dx, dy = _fallback_steer(dx, dy, wall_x, wall_y)
 
     dx, dy = _normalized(dx, dy)
     return dx, dy, split

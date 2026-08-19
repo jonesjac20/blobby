@@ -17,7 +17,13 @@ from aiohttp import WSMsgType, web
 
 from server.config import HEALTHZ_STALE_AFTER_SECONDS, HOST, PORT, SIMULATION_CLOCK_SOURCE
 from server.loop import process_tick, tick_loop
-from server.protocol import ClientSession, FoodStream, handle_message, parse_client_message
+from server.protocol import (
+    ClientSession,
+    FoodStream,
+    encode_json,
+    handle_message,
+    parse_client_message,
+)
 from server.world import World
 
 log = logging.getLogger("blobby")
@@ -71,6 +77,7 @@ async def _emit(
     deaths: list[tuple[ClientSession, dict]],
     stream: FoodStream | None = None,
 ) -> None:
+    encoded = encode_json(payload)
     for session in list(sessions):
         if session.ws is None or session.ws.closed:
             continue
@@ -87,7 +94,7 @@ async def _emit(
         if _state_is_stale_for(session, payload):
             continue
         try:
-            await session.ws.send_json(payload)
+            await session.ws.send_str(encoded)
         except Exception:
             continue
     for session, message in deaths:
@@ -263,12 +270,18 @@ async def _stop_ticks(app: web.Application) -> None:
 
 
 def main() -> None:
+    import gc
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    web.run_app(create_app(), host=HOST, port=PORT)
+    gen0, gen1, gen2 = gc.get_threshold()
+    gc.set_threshold(gen0 * 2, gen1 * 2, gen2 * 2)
+    app = create_app()
+    gc.freeze()
+    web.run_app(app, host=HOST, port=PORT)
 
 
 if __name__ == "__main__":

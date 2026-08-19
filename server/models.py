@@ -2,7 +2,11 @@
 
 from dataclasses import dataclass, field
 
-from server.config import DEFAULT_COLOR, REMERGE_SECONDS, SPAWN_INVULN_SECONDS
+from server.config import (
+    DEFAULT_COLOR,
+    REMERGE_SECONDS,
+    SPAWN_INVULN_SECONDS,
+)
 
 
 @dataclass
@@ -31,10 +35,19 @@ class Player:
     # staged by a test or a scenario is edible immediately; only a live join
     # sets it to `world.now`.
     spawn_time: float = -SPAWN_INVULN_SECONDS
-    # Total mass at the high-water mark of the most recent tick, recorded before
-    # eaten pieces are removed. A player that dies has an empty piece list by
-    # the time anything downstream looks, so this is what `peak_mass` reads.
+    # Life high-water mark: total mass after eats, before this tick's losses
+    # or a burst peel. Never decreases, so `peak_mass` still sees a 75k life
+    # after the remnant is 1500. A player that dies has an empty piece list by
+    # the time anything downstream looks, so this is what Game Over reads.
     last_total_mass: float = 0.0
+    # True when this life came from a join with `"bot": true`. Humans never
+    # send it. Bots burst at a lower mass cap than humans.
+    bot: bool = False
+    # Socket-less burst corpse: cannot eat, never remerges, does not split.
+    inert: bool = False
+    # Corpse birth (sim time). Eviction of oldest inert uses this. Default is
+    # expired so a staged test player is not treated as born this tick.
+    last_burst_split: float = -1.0
 
 
 @dataclass

@@ -13,8 +13,8 @@ TICK_RATE = 30
 MIN_SPLIT_MASS = 35
 MAX_PIECES = 8
 EAT_RATIO = 1.25
-REMERGE_SECONDS = 12
-SPLIT_KICK_DECAY_SECONDS = 0.5
+REMERGE_SECONDS = 10
+SPLIT_KICK_DECAY_SECONDS = 3
 
 # --- simulation clock ------------------------------------------------------
 #
@@ -49,11 +49,11 @@ NAME_MAX_LEN = 16
 DEFAULT_NAME = "blob"
 DEFAULT_COLOR = "#4fc3f7"
 
-WORLD_WIDTH = 2000
-WORLD_HEIGHT = 2000
+WORLD_WIDTH = 1500
+WORLD_HEIGHT = 1500
 
 FOOD_COUNT = 1600
-FOOD_MASS = 5
+FOOD_MASS = 8
 # Cell size for the eat-scan skip-list (feel-pass A6). Pellets are bucketed once
 # per `_eat_food`; each piece queries a padded AABB and the scan still walks
 # `world.food` in dict order so eats stay seed-identical.
@@ -69,16 +69,43 @@ INITIAL_PLAYER_MASS = 50
 # cluster values - judge it on a screen in Phase 4, not here.
 SPAWN_INVULN_SECONDS = 5.0
 
+# Mass caps. A snowballing life peels down to remnant mass and dumps the
+# rest into a socket-less inert player. No age trigger: mass does not drain
+# except by being eaten. Bots cap earlier than humans so a 17-bot lobby
+# recycles giants without waiting for a player-sized snowball.
+BOT_BURST_MASS = 55000.0
+BOT_BURST_REMNANT_MASS = 1000.0
+PLAYER_BURST_MASS = 75000.0
+PLAYER_BURST_REMNANT_MASS = 1500.0
+# One shatter per burst, then freeze. No further splits.
+BURST_SHARDS = 6
+# Uneven mix: each shard's share of excess, before min-mass 1.
+BURST_SHARD_MIN_FRACTION = 0.05
+BURST_SHARD_MAX_FRACTION = 0.40
+# Extra outward travel past remnant+shard+nav-gap clearance, in
+# BURST_NAV_REFERENCE_MASS radii. Independent per shard.
+BURST_EXPLODE_EXTRA_NAV_RADII = 4.0
+BURST_SHARD_ANGLE_JITTER = 0.15
+BURST_KICK_SCALE_MIN = 0.85
+BURST_KICK_SCALE_MAX = 1.15
+# Global fuse: 17 bots * BURST_SHARDS. A second wave evicts oldest corpses.
+INERT_PIECE_CAP = 102
+# Pellets spawned when a corpse is evicted. Remainder of that mass is discarded.
+INERT_EVICT_FOOD_MAX = 24
+# Extra rim-to-rim gap when placing an inert fragment, as 2 * radius(400), so
+# a medium blob can pass between the halves.
+BURST_NAV_REFERENCE_MASS = 400.0
+
 # World units per second for a piece at INITIAL_PLAYER_MASS. Lighter pieces
 # move faster (`speed_for_mass`), so a split fragment can travel more than
 # its own radius in one tick. Food collection is a swept test along that
 # path, so pellets on the trajectory are still eaten.
 BASE_SPEED = 150
 # Split-kick displacement as a multiple of the pre-split parent piece's radius.
-# Six radii at mass 100 is ~34 world units - several blob widths, the pop the
-# old flat kick was tuned for. Heavier parents lunge farther; a hard cap below
-# keeps a giant from crossing the map in one press.
-SPLIT_KICK_RADII = 6.0
+# Three radii at mass 100 is ~17 world units; heavier parents lunge farther.
+# A hard cap below keeps a giant from crossing the map in one press. Decay
+# is SPLIT_KICK_DECAY_SECONDS (feel, not the source plan's 0.5s).
+SPLIT_KICK_RADII = 3
 # Cap on kick displacement, as a fraction of the shorter arena axis. Derived at
 # call time from WORLD_WIDTH / WORLD_HEIGHT so resizing the rectangle moves it.
 SPLIT_KICK_MAX_ARENA_FRACTION = 0.15
@@ -88,7 +115,7 @@ SPLIT_KICK_MAX_ARENA_FRACTION = 0.15
 SPEED_FALLOFF = 0.25
 # Floor as a fraction of BASE_SPEED. Without it, (mass ** -SPEED_FALLOFF) goes
 # toward zero and a giant cannot cross the map.
-SPEED_FLOOR_FRACTION = 0.25
+SPEED_FLOOR_FRACTION = 0.2
 
 # --- soft-body cluster and collision ---------------------------------------
 #
@@ -108,7 +135,7 @@ EAT_OVERLAP = 0.5
 MERGE_OVERLAP = 0.6
 
 # World units per second each of a player's pieces drifts toward its neighbours.
-COHESION_SPEED = 12.0
+COHESION_SPEED = 4.0
 # World units per second once a pair's remerge timer clears, at zero gap.
 # Close in, this is the whole pull: a resting pair still sinks over several
 # ticks rather than snapping. Far out, MERGE_RECALL adds to it.
@@ -117,7 +144,7 @@ MERGE_PULL_SPEED = 8.0
 # A fragment 100 units out closes at MERGE_PULL_SPEED + 100 * MERGE_RECALL, so
 # a split that drifted off still returns once the timer clears. Linear in
 # distance, so the time to arrive stays bounded even across a large world.
-MERGE_RECALL = 3.0
+MERGE_RECALL = 4.0
 # Position-projection rounds per tick. Projection is dt-independent, so this is
 # the only knob deciding how firmly a crowded cluster is pushed apart.
 SEPARATION_PASSES = 2
@@ -129,6 +156,11 @@ def speed_for_mass(mass: float) -> float:
         return BASE_SPEED
     raw = BASE_SPEED * (INITIAL_PLAYER_MASS / mass) ** SPEED_FALLOFF
     return max(raw, BASE_SPEED * SPEED_FLOOR_FRACTION)
+
+
+def burst_nav_gap() -> float:
+    """World-unit gap between inert half-discs so a medium blob can pass."""
+    return 2.0 * math.sqrt(max(BURST_NAV_REFERENCE_MASS, 0.0) / math.pi)
 
 
 def split_kick_displacement_max() -> float:

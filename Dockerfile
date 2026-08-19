@@ -12,6 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server/ server/
+COPY bots/ bots/
 # Whitelist only: same four files PUBLIC_FILES serves. Viewer/recordings stay out.
 COPY client/index.html client/game.js client/render.js client/style.css client/
 

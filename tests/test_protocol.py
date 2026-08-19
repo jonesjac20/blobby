@@ -40,7 +40,12 @@ def test_parse_join_normalizes_name_and_color():
         {"type": "join", "name": "  Alice  ", "color": "#FFAA00"}
     )
 
-    assert msg == {"type": "join", "name": "Alice", "color": "#ffaa00"}
+    assert msg == {
+        "type": "join",
+        "name": "Alice",
+        "color": "#ffaa00",
+        "bot": False,
+    }
 
 
 def test_parse_join_rejects_empty_and_invalid_color():
@@ -48,6 +53,7 @@ def test_parse_join_rejects_empty_and_invalid_color():
 
     assert msg["name"] == DEFAULT_NAME
     assert msg["color"] == DEFAULT_COLOR
+    assert msg["bot"] is False
 
 
 def test_parse_join_truncates_long_names():
@@ -95,6 +101,8 @@ def test_serialize_state_matches_wire_shape_and_includes_color(world):
             "name": "A",
             "color": "#ff0000",
             "protected": False,
+            "inert": False,
+            "peak_mass": 40,
             "pieces": [
                 {
                     "piece_id": player.pieces[0].piece_id,
@@ -448,6 +456,7 @@ def test_process_tick_advances_sim_time_and_snapshots(world):
 def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
     stream = FoodStream()
     world.food["a"] = Food(id="a", x=100.6, y=200.4)
+    world.food_epoch += 1
 
     stream.refresh(world)
     assert stream.version == 1
@@ -462,6 +471,7 @@ def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
     assert stream.version == 1
 
     del world.food["a"]
+    world.food_epoch += 1
     stream.refresh(world)
     assert stream.version == 2
     assert stream.payload == {"type": "food", "version": 2, "food": []}

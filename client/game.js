@@ -4,7 +4,9 @@
  * Connects on load and does not send join until Play. Food is held separately
  * and spliced onto a copy of the interpolated snapshot at draw time. Own pieces
  * are predicted from the latest snapshot and last input; everyone else is
- * interpolated. Spacebar sends split while playing; held-key auto-repeat is
+ * interpolated over the actual gap between snapshots, not an assumed
+ * 1/tickRate, so a late tick eases instead of finishing the lerp in 33ms
+ * and holding. Spacebar sends split while playing; held-key auto-repeat is
  * ignored. Wheel zooms the follow-cam while playing or spectating.
  */
 
@@ -36,6 +38,11 @@ const MAX_DT = 0.1;
 // Same ceiling as MAX_TICK_SECONDS: a hitch must not fire the predicted body
 // across the map.
 const PREDICT_MAX_DT = 0.25;
+// How far past the latest snapshot we will coast other players while waiting.
+const INTERP_EXTRAPOLATE = 1.2;
+// A gap this many ticks long is a hitch: drop leftover dead-reckon error
+// instead of drawing it as a second disc.
+const HITCH_TICKS = 2.25;
 const PREDICT_CORRECTION = 12;
 const INPUT_EPSILON = 1e-3;
 const ZOOM_MIN = 0.5;
@@ -60,6 +67,7 @@ let speedFloorFraction = 0.25;
 const canvas = document.getElementById("game-canvas");
 const hud = document.getElementById("hud");
 const massEl = document.getElementById("mass");
+const bestMassEl = document.getElementById("best-mass");
 const remergeEl = document.getElementById("remerge");
 const remergeTimeEl = document.getElementById("remerge-time");
 const protectedEl = document.getElementById("protected");
@@ -100,6 +108,7 @@ let snapCamera = false;
 let previousState = null;
 let nextState = null;
 let nextArrivedAt = 0;
+let previousArrivedAt = 0;
 let latestFood = [];
 
 /** @type {{ x: number, y: number } | null} */
@@ -236,6 +245,8 @@ function connect() {
     // would slide every blob from where it was to where it now is.
     previousState = null;
     nextState = null;
+    nextArrivedAt = 0;
+    previousArrivedAt = 0;
     latestFood = [];
     resetPrediction();
     syncJoinButtons();
@@ -283,10 +294,26 @@ function onMessage(event) {
       break;
     case "state":
       applyConfig(msg);
-      reconcilePrediction(msg);
-      previousState = nextState;
-      nextState = msg;
-      nextArrivedAt = performance.now();
+      {
+        const arrived = performance.now();
+        const gap =
+          nextArrivedAt > 0 ? (arrived - nextArrivedAt) / 1000 : tickSeconds;
+        if (gap > tickSeconds * HITCH_TICKS) {
+          // The snapshot already includes the hitch-sized dt. Leftover
+          // dead-reckon error would draw a second copy of your blob offset
+          // from the interpolated one; circling the mouse then orbits both
+          // around the cursor.
+          predictError = new Map();
+          lastPredictedPieces = null;
+          lastPredictedIds = null;
+        } else {
+          reconcilePrediction(msg);
+        }
+        previousState = nextState;
+        previousArrivedAt = nextArrivedAt > 0 ? nextArrivedAt : arrived;
+        nextState = msg;
+        nextArrivedAt = arrived;
+      }
       if (mode === "playing" && selfId) {
         const mine = msg.players.find((player) => player.id === selfId);
         if (mine && mine.pieces.length) {
@@ -489,14 +516,21 @@ function reconcilePrediction(msg) {
     lastPredictedIds = ids;
     return;
   }
+  const snapDist = baseSpeed * PREDICT_MAX_DT;
   const nextError = new Map();
   for (const piece of mine.pieces) {
     const drawn = lastPredictedPieces.get(piece.piece_id);
     if (!drawn) continue;
-    nextError.set(piece.piece_id, {
-      x: drawn.x - piece.x,
-      y: drawn.y - piece.y,
-    });
+    const dx = drawn.x - piece.x;
+    const dy = drawn.y - piece.y;
+    if (Math.hypot(dx, dy) > snapDist) {
+      // Too large to be RTT — leftover hitch prediction. Snap rather than
+      // holding an offset disc next to the snapshot body.
+      predictError = new Map();
+      lastPredictedIds = ids;
+      return;
+    }
+    nextError.set(piece.piece_id, { x: dx, y: dy });
   }
   predictError = nextError;
   lastPredictedIds = ids;
@@ -518,25 +552,26 @@ function predictSelf(interpolated, now, frameDt) {
   const predictDt = Math.min(Math.max((now - nextArrivedAt) / 1000, 0), PREDICT_MAX_DT);
   const decay = frameDt > 0 ? Math.exp(-PREDICT_CORRECTION * frameDt) : 1;
   const knobs = speedKnobs();
+  // One cluster velocity, not per-piece. Different masses otherwise drift
+  // apart along the aim vector and read as two halves orbiting the cursor.
   const clusterSpeed = speedForMass(playerMass(source), knobs);
-  const split = source.pieces.length >= 2;
   const drawn = new Map();
   const cursor =
     pointer && lastDraw
       ? screenToWorld(camera, lastDraw.viewport, pointer.x, pointer.y)
       : null;
 
+  const travelX = lastSentDx * clusterSpeed * predictDt;
+  const travelY = lastSentDy * clusterSpeed * predictDt;
   const planned = source.pieces.map((piece) => {
-    const mergeReady = split && !(piece.remerge_in > 0);
-    const speed = mergeReady ? clusterSpeed : speedForMass(piece.mass, knobs);
     let err = predictError.get(piece.piece_id) || { x: 0, y: 0 };
     err = { x: err.x * decay, y: err.y * decay };
     predictError.set(piece.piece_id, err);
     return {
       piece,
       err,
-      travelX: lastSentDx * speed * predictDt,
-      travelY: lastSentDy * speed * predictDt,
+      travelX,
+      travelY,
     };
   });
 
@@ -596,11 +631,11 @@ function predictSelf(interpolated, now, frameDt) {
   lastPredictedIds = new Set(drawn.keys());
 
   const predicted = { ...source, pieces };
-  const players = interpolated.players.some((player) => player.id === selfId)
-    ? interpolated.players.map((player) =>
-        player.id === selfId ? predicted : player
-      )
-    : interpolated.players.concat(predicted);
+  // Always strip then overlay. Concat-if-missing left the interpolated self
+  // in place whenever ids failed to match, which is two discs of you.
+  const players = interpolated.players
+    .filter((player) => player.id !== selfId)
+    .concat(predicted);
   return { ...interpolated, players };
 }
 
@@ -611,10 +646,13 @@ function followedPlayer(snapshot) {
   return player;
 }
 
-function tick(timestamp) {
+function tick() {
   requestAnimationFrame(tick);
-  const dt = lastTimestamp ? Math.min((timestamp - lastTimestamp) / 1000, MAX_DT) : 0;
-  lastTimestamp = timestamp;
+  // Same clock as nextArrivedAt. Mixing rAF timestamps with performance.now()
+  // made alpha hitch even when snapshots were on time.
+  const now = performance.now();
+  const dt = lastTimestamp ? Math.min((now - lastTimestamp) / 1000, MAX_DT) : 0;
+  lastTimestamp = now;
 
   const { ctx, viewport } = resizeCanvas(canvas);
   if (!nextState) {
@@ -622,14 +660,16 @@ function tick(timestamp) {
     return;
   }
 
-  const elapsed = (timestamp - nextArrivedAt) / 1000;
-  const alpha = Math.min(Math.max(elapsed / tickSeconds, 0), 1);
+  const elapsed = Math.max((now - nextArrivedAt) / 1000, 0);
+  const gap = Math.max((nextArrivedAt - previousArrivedAt) / 1000, tickSeconds);
+  const blendWindow = Math.min(gap, PREDICT_MAX_DT);
+  const alpha = Math.min(elapsed / blendWindow, INTERP_EXTRAPOLATE);
   const interpolated = interpolateStates(previousState, nextState, alpha);
   const withFood = { ...interpolated, food: latestFood };
   const aimSource = lastDraw ? lastDraw.snapshot : withFood;
   const aimViewport = lastDraw ? lastDraw.viewport : viewport;
   maybeSendInput(aimSource, aimViewport);
-  const snapshot = predictSelf(withFood, timestamp, dt);
+  const snapshot = predictSelf(withFood, now, dt);
 
   if (mode === "spectating" && followId && !followedPlayer(snapshot)) {
     cycleFollow(snapshot);
@@ -653,6 +693,10 @@ function tick(timestamp) {
   if (mode === "playing" && followed && followId === selfId) {
     hud.hidden = false;
     massEl.textContent = String(Math.round(playerMass(followed)));
+    const best = Number(followed.peak_mass);
+    bestMassEl.textContent = String(
+      Math.round(Number.isFinite(best) ? Math.max(best, playerMass(followed)) : playerMass(followed)),
+    );
     const wait = playerRemergeIn(followed);
     remergeEl.hidden = wait < 0.05;
     if (wait >= 0.05) remergeTimeEl.textContent = wait.toFixed(1);

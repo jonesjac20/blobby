@@ -6,12 +6,15 @@
 #   curl -4 https://ifconfig.me
 # key_name: aws ec2 create-key-pair --key-name blobby-prod ...
 #
+# instance_type: t3.small (2 GB) is required for the always-on 17-bot lobby.
+# t3.micro (1 GB) OOMs. If tick hz= stays well below 30, bump to t3.medium.
+#
 # Then: terraform init && terraform apply
 # After Docker is up (1-2 min): ssh ubuntu@<eip>, git clone, docker compose up -d
 # Do not register a GitHub runner in user_data. Phase 10 is a Human token on this box only.
 
 region         = "us-east-1"
-instance_type  = "t3.micro"
+instance_type  = "t3.small"
 key_name       = "blobby-prod"
 ssh_cidr       = "REPLACE_WITH_HOME_IP/32"
 enable_ssm     = false

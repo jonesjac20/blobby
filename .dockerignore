@@ -12,7 +12,7 @@ __pycache__
 htmlcov
 tests
 tools
-bots
+# bots/ is in the image for the Compose/Fargate sidecar. Do not ignore it.
 docs
 scripts
 client/recordings

@@ -30,6 +30,11 @@ from server.models import Player
 from server.world import World
 
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+JSON_SEPARATORS = (",", ":")
+
+
+def encode_json(payload: dict) -> str:
+    return json.dumps(payload, separators=JSON_SEPARATORS)
 
 
 @dataclass
@@ -56,33 +61,33 @@ class ClientSession:
 class FoodStream:
     """Change-gated food broadcast. One shared payload, a version per socket.
 
-    Pellets have no velocity, so comparing the id set once per tick catches
-    every change. The payload is bare `[x, y]` integer pairs — food has no
-    radius in the simulation, so a half-unit shift is sub-pixel at play zoom,
-    and dropping the 32-hex ids is what makes the message small enough to send
-    at all. `encoded` is that payload dumped once; `_emit` sends the string to
-    every behind socket rather than `json.dumps` per socket. A later per-pellet
-    delta is a drop-in on this same message type.
+    Pellets have no velocity, so `World.food_epoch` catches every change
+    without allocating a frozenset of ids each tick. The payload is bare
+    `[x, y]` integer pairs — food has no radius in the simulation, so a
+    half-unit shift is sub-pixel at play zoom, and dropping the 32-hex ids is
+    what makes the message small enough to send at all. `encoded` is that
+    payload dumped once; `_emit` sends the string to every behind socket
+    rather than `json.dumps` per socket. A later per-pellet delta is a
+    drop-in on this same message type.
     """
 
     def __init__(self) -> None:
         self.version = 0
-        self._ids: frozenset[str] = frozenset()
+        self._epoch = 0
         self.payload: dict = {"type": "food", "version": 0, "food": []}
-        self.encoded: str = json.dumps(self.payload)
+        self.encoded: str = encode_json(self.payload)
 
     def refresh(self, world: World) -> None:
-        current = frozenset(world.food)
-        if current == self._ids:
+        if world.food_epoch == self._epoch:
             return
-        self._ids = current
+        self._epoch = world.food_epoch
         self.version += 1
         self.payload = {
             "type": "food",
             "version": self.version,
             "food": [[round(f.x), round(f.y)] for f in world.food.values()],
         }
-        self.encoded = json.dumps(self.payload)
+        self.encoded = encode_json(self.payload)
 
 
 def normalize_name(value: object) -> str:
@@ -151,6 +156,7 @@ def parse_client_message(raw: object) -> dict | None:
             "type": "join",
             "name": normalize_name(raw.get("name")),
             "color": normalize_color(raw.get("color")),
+            "bot": raw.get("bot") is True,
         }
     if msg_type == "input":
         dx, dy = raw.get("dx"), raw.get("dy")
@@ -188,13 +194,19 @@ def serialize_state(world: World) -> dict:
                 "name": player.name,
                 "color": player.color,
                 "protected": simulation.is_spawn_protected(world, player),
+                "inert": player.inert,
+                "peak_mass": player.last_total_mass,
                 "pieces": [
                     {
                         "piece_id": piece.piece_id,
-                        "x": piece.x,
-                        "y": piece.y,
-                        "mass": piece.mass,
-                        "remerge_in": round(simulation.remerge_in(world, piece), 2),
+                        "x": round(piece.x, 2),
+                        "y": round(piece.y, 2),
+                        "mass": round(piece.mass, 1),
+                        "remerge_in": (
+                            0
+                            if player.inert
+                            else round(simulation.remerge_in(world, piece), 2)
+                        ),
                     }
                     for piece in player.pieces
                 ],
@@ -287,11 +299,19 @@ def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
     mass = _debug_spawn_mass()
     if mass is None:
         mass = INITIAL_PLAYER_MASS
+    is_bot = bool(msg.get("bot"))
     if spawn is None:
-        player = world.spawn_player(session.name, color=session.color, mass=mass)
+        player = world.spawn_player(
+            session.name, color=session.color, mass=mass, bot=is_bot
+        )
     else:
         player = world.spawn_player(
-            session.name, x=spawn[0], y=spawn[1], color=session.color, mass=mass
+            session.name,
+            x=spawn[0],
+            y=spawn[1],
+            color=session.color,
+            mass=mass,
+            bot=is_bot,
         )
     # A spawn point is drawn from the RNG and clamped into the rectangle, never
     # away from other bodies, so this is the only thing stopping a join from
@@ -306,14 +326,14 @@ def handle_join(world: World, session: ClientSession, msg: dict) -> dict | None:
 
 def handle_input(world: World, session: ClientSession, msg: dict) -> None:
     player = playing_player(world, session)
-    if player is None:
+    if player is None or player.inert:
         return
     player.last_input = (msg["dx"], msg["dy"])
 
 
 def handle_split(world: World, session: ClientSession) -> None:
     player = playing_player(world, session)
-    if player is None:
+    if player is None or player.inert:
         return
     simulation.try_split(world, player)
 
@@ -328,8 +348,8 @@ def update_and_eliminate(
     ghosts.
 
     Runs after `simulation.step`, which means a player killed this tick is
-    already down to zero pieces here. Mass it gained before dying comes from
-    `Player.last_total_mass`, recorded mid-tick for exactly this reason.
+    already down to zero pieces here. Mass it gained before dying, and mass
+    it held before a burst peel, lives on `Player.last_total_mass`.
     """
     session_by_player = {
         session.player_id: session for session in sessions if session.player_id
@@ -340,13 +360,8 @@ def update_and_eliminate(
     for player in list(world.players.values()):
         session = session_by_player.get(player.id)
         if session is not None:
-            # A dead player's pieces are already gone, so its own last total is
-            # the only record of mass it gained on the tick that killed it.
-            total = (
-                sum(piece.mass for piece in player.pieces)
-                if player.pieces
-                else player.last_total_mass
-            )
+            current = sum(piece.mass for piece in player.pieces)
+            total = max(current, player.last_total_mass)
             if total > session.peak_mass:
                 session.peak_mass = total
         if player.pieces:

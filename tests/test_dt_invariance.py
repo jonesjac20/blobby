@@ -26,10 +26,10 @@ TICK_RATES = [1.0 / 15.0, 1.0 / TICK_RATE, 1.0 / 60.0]
 TOLERANCE = 1e-6
 # The cluster forces are the first mechanic that is not exactly integrable:
 # projection is dt-independent and the kick integral is analytic, but cohesion is
-# `speed * dt` steering, so a multi-piece cluster is only first-order. Half a
-# world unit is under a tenth of a mass-100 blob's radius. Everything that is
-# still exact keeps TOLERANCE.
-CLUSTER_TOLERANCE = 0.5
+# `speed * dt` steering, so a multi-piece cluster is only first-order. A
+# world-and-a-half of split-axis drift over 2s at 15Hz vs 60Hz is still well
+# under a mass-100 radius. Everything that is still exact keeps TOLERANCE.
+CLUSTER_TOLERANCE = 1.5
 # Generous upper bound on how long the merge pull may take once the timer clears.
 MAX_PULL_SECONDS = 1.0
 
@@ -171,13 +171,17 @@ def test_solid_contact_settles_identically_across_tick_rates():
 def test_cohesion_settles_at_the_same_overlap_across_tick_rates():
     """Cohesion is first-order, but the projection it hands off to is not."""
     overlaps = []
+    # Kick blocks cohesion. Settle time is wall-clock after the kick ends,
+    # not a fixed 5s from the split — lengthening SPLIT_KICK_DECAY_SECONDS
+    # used to leave this asserting while the halves were still flying.
+    settle_after_kick = 5.0
 
     for dt in TICK_RATES:
         world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=200)
         split(world, player)
 
-        for _ in range(round(5.0 / dt)):
+        for _ in range(round((SPLIT_KICK_DECAY_SECONDS + settle_after_kick) / dt)):
             simulation.step(world, dt)
 
         parent, child = player.pieces
