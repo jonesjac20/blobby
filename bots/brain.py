@@ -20,7 +20,6 @@ from server.config import (
     WORLD_HEIGHT,
     WORLD_WIDTH,
     split_kick_speed,
-    speed_for_mass,
 )
 from server.simulation import radius_for_mass
 
@@ -347,17 +346,20 @@ def split_lunge_ok(
     dist = math.hypot(hitter["x"] - prey["x"], hitter["y"] - prey["y"])
     need = max(0.0, dist - radius_for_mass(half))
     window = SPLIT_KICK_DECAY_SECONDS
-    our_travel = _kick_displacement(hitter["mass"]) + speed_for_mass(half) * window
-    their_escape = speed_for_mass(prey["mass"]) * window
     prey_from_us = math.hypot(prey["x"] - cx, prey["y"] - cy)
     room = max(0.0, vision_r - prey_from_us)
-    if speed_for_mass(prey["mass"]) > 0.0:
-        # t_edge is the time it takes for the prey to reach the edge of our vision radius
-        t_edge = room / speed_for_mass(prey["mass"])
-        window = min(window, t_edge) if t_edge > 0.0 else window
-        our_travel = _kick_displacement(hitter["mass"]) + speed_for_mass(half) * window
-        their_escape = speed_for_mass(prey["mass"]) * window
-    return our_travel - their_escape >= need
+    prey_speed = speed_for_mass(prey["mass"])
+    if prey_speed > 0.0:
+        t_edge = room / prey_speed
+        if t_edge > 0.0:
+            window = min(window, t_edge)
+        elif room <= 0.0:
+            window = 0.0
+    # Kick displacement is the lunge. A faster prey's flee over a long
+    # decay window must not cancel it: only steering *surplus* (if any)
+    # adds to the kick, and only until they leave vision.
+    surplus = max(0.0, speed_for_mass(half) - prey_speed)
+    return _kick_displacement(hitter["mass"]) + surplus * window >= need
 
 
 def sacrifice_ok(

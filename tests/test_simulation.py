@@ -691,7 +691,9 @@ def test_every_piece_of_a_full_cluster_touches_a_neighbour(world):
         advance(world, 1.5, TICK)
     assert len(player.pieces) == MAX_PIECES
 
-    advance(world, 4.0, TICK)
+    # Last split's kick is still in flight for SPLIT_KICK_DECAY_SECONDS;
+    # cohesion is skipped until it ends.
+    advance(world, SPLIT_KICK_DECAY_SECONDS + 4.0, TICK)
 
     for piece in player.pieces:
         touching = [

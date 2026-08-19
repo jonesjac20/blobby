@@ -102,9 +102,9 @@ BURST_NAV_REFERENCE_MASS = 400.0
 # path, so pellets on the trajectory are still eaten.
 BASE_SPEED = 150
 # Split-kick displacement as a multiple of the pre-split parent piece's radius.
-# Six radii at mass 100 is ~34 world units - several blob widths, the pop the
-# old flat kick was tuned for. Heavier parents lunge farther; a hard cap below
-# keeps a giant from crossing the map in one press.
+# Three radii at mass 100 is ~17 world units; heavier parents lunge farther.
+# A hard cap below keeps a giant from crossing the map in one press. Decay
+# is SPLIT_KICK_DECAY_SECONDS (feel, not the source plan's 0.5s).
 SPLIT_KICK_RADII = 3
 # Cap on kick displacement, as a fraction of the shorter arena axis. Derived at
 # call time from WORLD_WIDTH / WORLD_HEIGHT so resizing the rectangle moves it.

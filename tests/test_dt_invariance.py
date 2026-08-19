@@ -171,13 +171,17 @@ def test_solid_contact_settles_identically_across_tick_rates():
 def test_cohesion_settles_at_the_same_overlap_across_tick_rates():
     """Cohesion is first-order, but the projection it hands off to is not."""
     overlaps = []
+    # Kick blocks cohesion. Settle time is wall-clock after the kick ends,
+    # not a fixed 5s from the split — lengthening SPLIT_KICK_DECAY_SECONDS
+    # used to leave this asserting while the halves were still flying.
+    settle_after_kick = 5.0
 
     for dt in TICK_RATES:
         world = World(seed=0, food_target=0)
         player = world.spawn_player("A", 500.0, 500.0, mass=200)
         split(world, player)
 
-        for _ in range(round(5.0 / dt)):
+        for _ in range(round((SPLIT_KICK_DECAY_SECONDS + settle_after_kick) / dt)):
             simulation.step(world, dt)
 
         parent, child = player.pieces
