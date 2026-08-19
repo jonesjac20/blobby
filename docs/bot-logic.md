@@ -27,11 +27,11 @@ The server broadcasts the full world. Using that omniscience makes bots psychic.
 
 **Vision** is a circle around the mass-weighted centroid, sized like the follow-cam in [`client/render.js`](../client/render.js): `baseSpan = 420` at `INITIAL_PLAYER_MASS`, scaling with `sqrt(mass / 50)`. Starting **radius** is half that span (~210 at spawn), times personality `vision_scale`. A small hysteresis band (`VISION_EDGE_HYSTERESIS`) so entities do not flicker at the rim.
 
-Vision culls **other players** for classification. Hunt never uses off-screen prey. Flee keeps a short **last-known threat point** after they leave the circle (`FLEE_MEMORY_SECONDS`); it must not refresh that point from an off-screen piece. Food is not fog-of-war — Graze sees pellets like the browser holding the latest `food` message.
+Vision culls **other players** for classification. New Hunt commits never use off-screen prey. Hunt may keep a short **last-known prey point** after they leave the circle (`HUNT_MEMORY_SECONDS`); Flee keeps a **last-known threat point** (`FLEE_MEMORY_SECONDS`). Neither ghost may refresh from an off-screen piece. Food is not fog-of-war — Graze sees pellets like the browser holding the latest `food` message.
 
 **Graze** picks the nearest pellet in the bot’s 100×100 cell and its 8 neighbors (a 3×3), with target hysteresis. Empty 3×3 → wander (wall-aware), never sit at `(0,0)` while a local pellet exists. The 100×100 grid is a **client-side targeting** index, rebuilt once per process when the food version changes. It is not the server eat scan.
 
-Entities outside vision do not exist for Hunt. Flee uses the same radius for *seeing* a threat — a giant across the map is not a threat — then may keep steering away from the last-seen point.
+Entities outside vision do not exist for a *new* Hunt commit. After a chase starts, Hunt may keep steering toward the last-seen point until interest expires. Flee uses the same radius for *seeing* a threat — a giant across the map is not a threat — then may keep steering away from the last-seen point.
 
 ---
 
@@ -66,7 +66,7 @@ stateDiagram-v2
     Flee --> Hunt: predatorBecamePrey
     Graze --> Hunt: catchablePrey
     Hunt --> Recover: justSplit
-    Hunt --> Graze: preyLost
+    Hunt --> Graze: preyGoneAndInterestExpired
     Recover --> Hunt: freeMealNoSplit
     Recover --> Graze: remerged
 ```
@@ -85,15 +85,23 @@ No speed-splits at range — they feed the predator. One exception, still inside
 
 ### Hunt
 
-A catchable prey in vision, and not Flee/Recover (unless that free meal). Catchable means one of:
+A catchable prey in vision, and not Flee/Recover (unless that free meal). Prey always runs — do not wait for a lazy meal. Catchable means one of:
 
-- **Inert** we can eat. Always. Closing speed, hunt-range, and sibling remelt do not apply — the disc does not run, and fragments never fuse back into a threat. Prefer this over live prey and over Graze.
-- Prey is **not fleeing** (closing or grazing) and we can intercept by walking. Walk this down first; do not split until the kick itself can cover the gap.
+- **Inert** we can eat. Always. Hunt-range and sibling remelt do not apply — the disc does not run, and fragments never fuse back into a threat. Prefer this over live prey and over Graze.
+- Any live unprotected prey **in vision** (within personality `hunt_range`), including receding prey. Walk this down; do not split until the kick itself can cover the gap.
 - Prey is **trapped** (a wall or corner between them and us).
 - **Split-lunge** passes the [checklist](#split-lunge-checklist) below. Chase until the kick reaches, then one `input` aimed from the hitting piece at the prey and `split`. Not used on inert.
 - **Punish:** a player who was a threat is now split into pieces we can eat, `remerge_in` above `PUNISH_REMERGE_FLOOR`, and no remaining threatening piece is on a collision course. This is the Flee → Hunt flip, not a fifth state. See [Tactics](#tactics-that-are-not-new-states).
 
-If none of those, do not enter Hunt; keep Grazing. Futile waddling at a fleeing smaller blob is how bots look broken. Protected others are not prey; steer off a shield we could eat rather than graze or hunt onto it.
+**Targeting** among catchable pieces, eat still per-piece (`our_best > piece.mass * EAT_RATIO`):
+
+1. Inert we can eat — largest mass, then nearer.
+2. **Easy kill:** another player with 2+ pieces in vision, every visible piece is prey (no mixed cluster), remelt above `PUNISH_REMERGE_FLOOR`. More fragments beat fewer; then the largest still-edible fragment. Nearest only as a tiebreak.
+3. Otherwise the catchable piece with the most mass. Distance is only a tiebreak.
+
+When the live target leaves vision, keep Hunt and steer toward the last-known point for `HUNT_MEMORY_SECONDS`. Do not refresh that point from an off-screen piece, and do not split-lunge at a ghost. If a different edible appears, switch using the ranking above and refresh interest. Flee interrupts immediately and **clears** hunt interest — after the threat is gone, Hunt only resumes if prey is actually in vision again.
+
+When prey is gone **and** interest has expired, exit to Graze (or Recover if the cluster is still split). Open-field chase of a competent fleer still will not catch without a corner or a lunge; the commit is the aggressive read. Protected others are not prey; steer off a shield we could eat rather than graze or hunt onto it.
 
 ### Graze
 
@@ -178,7 +186,7 @@ decide(view, memory) -> (dx, dy, split)
 ```
 
 - `view` is vision-culled players + held food + inferred velocities from the last two snapshots, plus our `welcome` id.
-- `memory` is dwell timers, the current graze waypoint, and the current state. Not wall-clock.
+- `memory` is dwell timers, last-known threat/prey ghosts, the current graze waypoint, and the current state. Not wall-clock.
 - `dx, dy` are a finite steering vector, same shape as a human `input` message. `(0, 0)` only when there is genuinely nothing to steer toward — not when overlapping a camper or threat.
 - `split` is a boolean; the plumbing sends `{"type": "split"}` at most once per rising edge, same as the client ignoring key repeat.
 
