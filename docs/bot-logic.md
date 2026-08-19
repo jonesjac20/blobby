@@ -47,7 +47,7 @@ For each foreign piece:
 
 `inert` rides `state` next to `protected`. Spawn-protected is not prey; inert is never a threat. A catchable inert piece is a **free meal**: Hunt it on sight (no closing-speed or remelt wait — a corpse does not flee or fuse) and prefer it over Graze pellets. Do not split-lunge into it.
 
-A threat or prey is **approaching** if inferred radial speed toward us exceeds `APPROACHING_SPEED` (feel parameter). Flee from approaching threats, not from every larger disc that happens to be on screen and receding.
+A threat or prey is **approaching** if inferred radial speed toward us exceeds `APPROACHING_SPEED` (feel parameter). Flee from approaching threats, not from every larger disc that happens to be on screen and receding — except during spawn invulnerability, and except when we are already inside the threat’s disc. Panic radius is `FLEE_PANIC_RADII * radius(our mass) + flee_padding + radius(threat)` so a giant covering us is panic even if they are not closing.
 
 ---
 
@@ -75,9 +75,9 @@ Hysteresis on every transition: a minimum dwell (`STATE_DWELL_SECONDS`) or a sco
 
 ### Flee
 
-Approaching threat, or any threat inside a tighter panic radius (`FLEE_PANIC_RADIUS`, scaled with our size, plus personality `flee_padding`). Steer toward open space: away from the threat **plus** away from walls and corners. Never flee into a corner.
+Approaching threat, or any threat inside a tighter panic radius (`FLEE_PANIC_RADII` times our radius, plus personality `flee_padding`, plus the threat’s radius). During `SPAWN_INVULN_SECONDS`, any threat in vision is a Flee trigger — the window is for getting clear, including when the shield is about to drop. Steer toward open space: away from the threat **plus** away from walls and corners. Never flee into a corner. Overlapping a body is not a reason to emit `(0, 0)`; pick an open direction.
 
-No speed-splits at range — they feed the predator. One exception, still inside Flee: **sacrifice split** when whole-body death is imminent. See [Tactics](#tactics-that-are-not-new-states).
+No speed-splits at range — they feed the predator. One exception, still inside Flee: **sacrifice split** when whole-body death is imminent. Sacrifice is forbidden while `protected` (we cannot be eaten; splitting makes the life more edible when the window ends). See [Tactics](#tactics-that-are-not-new-states).
 
 ### Recover
 
@@ -93,13 +93,13 @@ A catchable prey in vision, and not Flee/Recover (unless that free meal). Catcha
 - **Split-lunge** passes the [checklist](#split-lunge-checklist) below. Not used on inert.
 - **Punish:** a player who was a threat is now split into pieces we can eat, `remerge_in` above `PUNISH_REMERGE_FLOOR`, and no remaining threatening piece is on a collision course. This is the Flee → Hunt flip, not a fifth state. See [Tactics](#tactics-that-are-not-new-states).
 
-If none of those, do not enter Hunt; keep Grazing. Futile waddling at a fleeing smaller blob is how bots look broken.
+If none of those, do not enter Hunt; keep Grazing. Futile waddling at a fleeing smaller blob is how bots look broken. Protected others are not prey; steer off a shield we could eat rather than graze or hunt onto it.
 
 ### Graze
 
-Default. Greedy nearest pellet in the bot’s 100×100 cell **plus 8 neighbors**, with target hysteresis so the input does not flicker. Empty 3×3 → wander. Never sit at `(0, 0)` unless there is no local pellet (then wander). `input_toward_nearest_food` is the wrong graze — 1800 pellets and thirty bots all converge and orbit.
+Default. Greedy nearest pellet in the bot’s 100×100 cell **plus 8 neighbors**, with target hysteresis so the input does not flicker. Empty 3×3 → wander. Never sit at `(0, 0)` unless there is genuinely nowhere to go — overlapping a camper or a protected meal is not that case; pick an open direction. `input_toward_nearest_food` is the wrong graze — 1800 pellets and thirty bots all converge and orbit.
 
-During `SPAWN_INVULN_SECONDS`, Graze and get clear of anyone sitting on the spawn. A spawn-size split (`50 → 25`) is below `MIN_SPLIT_MASS` on the halves and cannot eat anything a fresh life would hunt; do not open with a lunge.
+During `SPAWN_INVULN_SECONDS`, threats in vision are Flee, not Graze. Get clear of anyone else sitting on the spawn. A spawn-size split (`50 → 25`) is below `MIN_SPLIT_MASS` on the halves and cannot eat anything a fresh life would hunt; do not open with a lunge.
 
 ---
 
@@ -115,6 +115,7 @@ The one situation that justifies a split inside Flee is **imminent whole-body de
 
 Sacrifice checklist (all must pass):
 
+- We are not `protected`.
 - We have exactly one piece (or every extra piece is already a lost cause).
 - That piece is `>= MIN_SPLIT_MASS`.
 - The threat can eat the current whole (`threat.mass > our.mass * EAT_RATIO`) and engulfment / closing time says we die this second if we stay whole.
@@ -178,7 +179,7 @@ decide(view, memory) -> (dx, dy, split)
 
 - `view` is vision-culled players + held food + inferred velocities from the last two snapshots, plus our `welcome` id.
 - `memory` is dwell timers, the current graze waypoint, and the current state. Not wall-clock.
-- `dx, dy` are a finite steering vector, same shape as a human `input` message. `(0, 0)` only when there is genuinely nothing to steer toward.
+- `dx, dy` are a finite steering vector, same shape as a human `input` message. `(0, 0)` only when there is genuinely nothing to steer toward — not when overlapping a camper or threat.
 - `split` is a boolean; the plumbing sends `{"type": "split"}` at most once per rising edge, same as the client ignoring key repeat.
 
 Unit-test the classifier, the four transitions, the split-lunge checklist, the sacrifice checklist, and the punish bands without a server. `input_toward_nearest_food` stays in the demo until the bot graduates it; [`tests/test_main.py`](../tests/test_main.py) already says that.

@@ -220,6 +220,39 @@ def _wall_repulsion(
     return dx, dy
 
 
+def _fallback_steer(
+    dx: float, dy: float, wall_x: float = 0.0, wall_y: float = 0.0
+) -> tuple[float, float]:
+    """Overlapping a body is not 'nothing to steer toward'."""
+    if dx == 0.0 and dy == 0.0:
+        return (wall_x or 1.0), wall_y
+    return dx, dy
+
+
+def _shield_repulsion(
+    cx: float, cy: float, foreign: list[dict], our_best: float
+) -> tuple[float, float]:
+    """Steer off spawn-protected meals so we do not sit on the shield."""
+    dx = dy = 0.0
+    for item in foreign:
+        if not item.get("protected"):
+            continue
+        if not (our_best > item["mass"] * EAT_RATIO):
+            continue
+        away_x = cx - item["x"]
+        away_y = cy - item["y"]
+        dist = item["dist"]
+        keep = radius_for_mass(item["mass"]) + radius_for_mass(our_best)
+        if dist < 1e-9:
+            dx += keep
+            continue
+        if dist < keep:
+            strength = keep - dist
+            dx += (away_x / dist) * strength
+            dy += (away_y / dist) * strength
+    return dx, dy
+
+
 def _kick_hits_wall(
     x: float,
     y: float,
@@ -528,10 +561,12 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
 
     live_threat = None
     for item in threats:
+        in_reach = item["dist"] <= panic_r + radius_for_mass(item["mass"])
         dangerous = (
-            mixed_cluster
+            protected
+            or mixed_cluster
             or item["closing"] > APPROACHING_SPEED
-            or item["dist"] <= panic_r
+            or in_reach
         )
         if dangerous:
             if live_threat is None or item["mass"] > live_threat["mass"]:
@@ -674,9 +709,8 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
         away_x, away_y = cx - tx, cy - ty
         wall_x, wall_y = _wall_repulsion(cx, cy, width, height)
         dx, dy = away_x + wall_x, away_y + wall_y
-        if dx == 0.0 and dy == 0.0:
-            dx, dy = wall_x or 1.0, wall_y
-        split = sacrifice_ok(
+        dx, dy = _fallback_steer(dx, dy, wall_x, wall_y)
+        split = (not protected) and sacrifice_ok(
             ours,
             threats,
             prev_positions,
@@ -692,6 +726,10 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
     elif memory.state == STATE_HUNT and hunt_target is not None:
         dx = hunt_target["x"] - cx
         dy = hunt_target["y"] - cy
+        sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
+        dx += sx
+        dy += sy
+        dx, dy = _fallback_steer(dx, dy)
         split = (not hunt_target.get("inert")) and split_lunge_ok(
             ours,
             hunt_target,
@@ -736,9 +774,13 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
                 dx, dy = target[0] - cx, target[1] - cy
             else:
                 dx, dy = _wander(cx, cy, width, height, vis_r, memory)
+        sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
+        dx += sx
+        dy += sy
         wall_x, wall_y = _wall_repulsion(cx, cy, width, height, margin=40.0)
         dx += 0.2 * wall_x
         dy += 0.2 * wall_y
+        dx, dy = _fallback_steer(dx, dy, wall_x, wall_y)
 
     dx, dy = _normalized(dx, dy)
     return dx, dy, split

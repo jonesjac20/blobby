@@ -584,6 +584,95 @@ def test_spawn_window_does_not_lunge():
     assert memory.state != STATE_HUNT
 
 
+def test_spawn_window_flees_a_stationary_giant_outside_old_panic():
+    """Protected + in-vision giant that is not approaching and outside panic+disc."""
+    memory = new_memory(0)
+    giant = _player("g", [_piece("g", 280.0, 200.0, 200)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[giant],
+            food=[(210.0, 200.0)],
+            protected=True,
+        ),
+        memory,
+    )
+    assert memory.state == STATE_FLEE
+    assert split is False
+    assert dx < 0
+    assert (dx, dy) != (0.0, 0.0)
+
+
+def test_spawn_window_overlapping_giant_flees_without_sacrifice():
+    memory = new_memory(0)
+    giant = _player("g", [_piece("g", 200.0, 200.0, 500)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[giant],
+            food=[(190.0, 200.0)],
+            protected=True,
+            personality=Personality(split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_FLEE
+    assert split is False
+    assert (dx, dy) != (0.0, 0.0)
+
+
+def test_spawn_window_overlapping_peer_does_not_sit():
+    """Camper dodge used to emit (0, 0) when spawned on a same-mass body."""
+    memory = new_memory(0)
+    peer = _player("p", [_piece("p", 200.0, 200.0, 50)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[peer],
+            food=[(190.0, 200.0)],
+            protected=True,
+        ),
+        memory,
+    )
+    assert memory.state == STATE_GRAZE
+    assert split is False
+    assert (dx, dy) != (0.0, 0.0)
+
+
+def test_unprotected_flees_when_a_giant_disc_covers_us():
+    """Panic includes the threat radius, so covering a spawn is live even unshielded."""
+    memory = new_memory(0)
+    giant = _player("g", [_piece("g", 220.0, 200.0, 5000)])
+    dx, dy, _ = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[giant],
+            food=[(190.0, 200.0)],
+        ),
+        memory,
+    )
+    assert memory.state == STATE_FLEE
+    assert dx < 0
+
+
+def test_hunter_steers_off_an_overlapping_protected_meal():
+    memory = new_memory(0)
+    shielded = _player("s", [_piece("s", 200.0, 200.0, 20)], protected=True)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[shielded],
+            food=[(200.0, 300.0)],
+            personality=Personality(hunt_range=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_GRAZE
+    assert split is False
+    assert dx > 0.0
+    assert (dx, dy) != (0.0, 0.0)
+
+
 def test_futile_chase_of_fleeing_prey_stays_graze():
     memory = new_memory(0)
     prey = _player("p", [_piece("p", 350.0, 200.0, 20)])
