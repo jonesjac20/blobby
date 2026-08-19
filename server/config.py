@@ -73,7 +73,7 @@ SPAWN_INVULN_SECONDS = 5.0
 # move faster (`speed_for_mass`), so a split fragment can travel more than
 # its own radius in one tick. Food collection is a swept test along that
 # path, so pellets on the trajectory are still eaten.
-BASE_SPEED = 200
+BASE_SPEED = 150
 # Split-kick displacement as a multiple of the pre-split parent piece's radius.
 # Six radii at mass 100 is ~34 world units - several blob widths, the pop the
 # old flat kick was tuned for. Heavier parents lunge farther; a hard cap below

@@ -123,25 +123,160 @@ Starts after Phase 9 (the Dockerfile and GHCR exist). Does not replace Phases 10
 
 Why this does not collide with Phase 10: three couplings would actually share a host, a tag, or a URL, and a preview must break all three.
 
-- Preview jobs are `runs-on: ubuntu-latest` and talk to AWS APIs. They never `runs-on: self-hosted`. That runner is production; a self-hosted preview job would `docker compose` on the live EC2.
-- Preview images are tagged `pr-<number>` (and maybe the PR SHA). They never overwrite `latest`. Phase 9's `build` job already refuses to publish `latest` from a PR; production compose is `latest` (Human bring-up) or the main git SHA (`BLOBBY_IMAGE_TAG` from deploy.yml), never a `pr-*` tag.
+- Preview jobs are `runs-on: ubuntu-latest` and talk to AWS APIs. They never `runs-on: self-hosted`. That runner is production; a self-hosted preview job would `docker compose` on the live EC2. Do **not** register another GitHub runner for previews.
+- Preview images are tagged `pr-<number>-<sha>` only. They never overwrite `latest`. A mutable `pr-N` tag alone would not change the Terraform `image` value, so ECS would keep the old task.
 - The preview URL is `http://<task-public-ip>:8000`, commented on the PR. The production URL is the Elastic IP, then the domain.
 
-On PR close: `terraform destroy` for that PR's workspace (or desired-count 0). Merge to `main` still only deploys via Phase 10. Closing a PR must not touch the EC2, and destroy never SSHs to it.
+On PR close: `terraform destroy` for that PR's S3 state key (`preview/pr-<n>/terraform.tfstate`). Merge to `main` still only deploys via Phase 10. Closing a PR must not touch the EC2, and destroy never SSHs to it.
 
-Native `/ws` still works on the task — one container, port 8000, same origin. No API Gateway (that would rewrite the socket model). No ALB for v1: idle cost is real, and its idle timeout is a WebSocket footgun. Task `assign_public_ip = ENABLED` in a public subnet, security group `8000/tcp`.
+Native `/ws` still works on the task — one container, port 8000, same origin. No API Gateway. No ALB. Task `assign_public_ip = ENABLED` in the **existing prod public subnet**, security group `blobby-preview` (`8000/tcp`). Same VPC as the EC2, different compute.
 
-GHCR pull: Phase 9's public package path is what makes Fargate simple (ECS cannot use `GITHUB_TOKEN` the way Actions can). If the package is private, push the `pr-N` tag to ECR instead, or store a `read:packages` PAT in Secrets Manager. Do not reuse the production host's GHCR token as a Fargate secret.
+GHCR is public, so Fargate can pull without ECR or a PAT. Do not reuse the production host's GHCR token as a Fargate secret.
 
-The preview smoke curl wants `/healthz`. If Phase 10 has not landed that route yet, curl `/` and swap once it exists.
+The preview smoke curl uses `/healthz` (already on the image from Phase 10).
 
-- [ ] **[Agent]** Add `infra/preview/` Terraform: default VPC, ECS cluster, Fargate task + service (0.25 vCPU / 0.5 GB is enough), security group `8000/tcp`, CloudWatch logs. Variable: `image` tag. No autoscaling. One workspace or state key per PR so two open PRs do not clobber each other. Separate from `infra/prod/` — different state, different lifecycle.
-- [ ] **[Agent]** Add `.github/workflows/preview.yml` on `pull_request` (`opened` / `synchronize` / `reopened`): after `test` is green, build and push `pr-${{ github.event.number }}` **without** tagging `latest`, `terraform apply -var=image=...`, wait for the task `RUNNING`, curl `/healthz` (or `/`), comment the URL on the PR. `runs-on: ubuntu-latest`. AWS auth via OIDC or an access-key secret — never the production runner, never `self-hosted`.
-- [ ] **[Agent]** Same workflow on `pull_request` `closed`: `terraform destroy` for that PR's workspace/state. Does not SSH to the EC2 and does not run `deploy.yml`.
-- [ ] **[Human]** IAM for the GitHub OIDC role used by preview (ecs, `iam:PassRole`, logs, ec2 security groups). Confirm GHCR is public, or set up ECR for the `pr-N` tag.
-- [ ] **[Both]** Verify: open a PR that changes a visible string, play a round on the preview URL, confirm the production URL still serves `main`. Close the PR, confirm the task is gone and the EC2 game is untouched.
+Preview is a separate workflow ([`preview.yml`](../.github/workflows/preview.yml)). Do not add it to [`ci.yml`](../.github/workflows/ci.yml): that file's `cancel-in-progress: true` would interrupt `terraform apply`, and `ci.yml` is the main test/build/deploy orchestrator, not a preview host.
+
+- [x] **[Agent]** Add [`infra/preview/foundation/`](../infra/preview/foundation/): look up the existing `blobby-prod` VPC and public subnet (no second VPC). Create ECS cluster `blobby-preview`, SG `blobby-preview` in that VPC, CloudWatch log group, task execution role, S3 state bucket, GitHub OIDC provider + role `blobby-preview-gha`. Laptop IAM extras in `iam-policy.json`.
+- [x] **[Agent]** Add [`infra/preview/service/`](../infra/preview/service/): per-PR Fargate task + service (0.25 vCPU / 0.5 GB), `assign_public_ip`, unique `image` tag, S3 backend key `preview/pr-<n>/terraform.tfstate`. No EC2 resources.
+- [x] **[Agent]** Add [`.github/workflows/preview.yml`](../.github/workflows/preview.yml) on `pull_request` (`opened` / `synchronize` / `reopened`): pytest/ruff, build and push `pr-${{ github.event.number }}-${{ github.sha }}` **without** tagging `latest`, `terraform apply`, wait for the task RUNNING, curl `/healthz`, comment the URL. `runs-on: ubuntu-latest`. AWS auth via OIDC.
+- [x] **[Agent]** Same workflow on `pull_request` `closed`: `terraform destroy` for that PR's state. Does not SSH to the EC2 and does not run `deploy.yml`.
+- [ ] **[Human]** Follow the [Human runbook](#phase-14-human-runbook) below (IAM, `terraform apply` foundation, GitHub variables, first PR). Confirm GHCR stays public.
 
 **Exit criteria:** open a PR, play a round on the preview URL, merge or close, confirm the Fargate task is gone and the production EC2 is untouched.
+
+### Phase 14 Human runbook
+
+You do every step here. The Agent cannot: AWS console, IAM attach, `terraform apply` with your keys, GitHub repo variables, or playing a round in a browser. Region is **us-east-1**.
+
+#### Do not do these
+
+- Do **not** register another GitHub Actions runner (no Settings → Actions → Runners).
+- Do **not** create another EC2, Elastic IP, or VPC. Preview is a Fargate **task** in the existing `blobby-prod` VPC.
+- Do **not** `terraform apply` / `destroy` in `infra/prod/` as part of this.
+- Do **not** SSH to the prod instance, change compose, or open new ports on the instance/SG for preview.
+- Do **not** edit `.github/workflows/ci.yml` or `deploy.yml`.
+- Do **not** make the GHCR package private (Fargate pulls it unauthenticated).
+
+#### Prerequisites (skip if already true)
+
+- [ ] **[Human]** Prod already applied: VPC tagged `Name=blobby-prod`, subnet `blobby-prod-public`, EC2 + Elastic IP serving the live game. If `cd infra/prod && terraform apply` already succeeded on this laptop, this is done.
+- [ ] **[Human]** Repo `jonesjac20/blobby`. GHCR package `blobby` is **Public** (repo → Packages → blobby → Package settings).
+- [ ] **[Human]** AWS CLI on the laptop, same IAM user that applied `infra/prod`. Setup (Windows) is below. Confirm with `aws sts get-caller-identity`.
+
+**AWS CLI on Windows (PowerShell).** Terraform talking to AWS and the `aws` command both read the same credentials file (`%USERPROFILE%\.aws\credentials`). If `terraform apply` in `infra/prod` already worked, you may only need to install the CLI binary — skip creating a second access key.
+
+1. Install: `winget install --id Amazon.AWSCLI -e` (or the MSI from https://aws.amazon.com/cli/). Close the terminal and open a new one.
+2. Check: `aws --version` should print `aws-cli/2...`.
+3. See whether credentials already exist: `aws sts get-caller-identity`. If that prints an `Account`, `UserId`, and `Arn`, you are done with CLI setup.
+4. If step 3 fails with `Unable to locate credentials`:
+   - AWS Console → **IAM** → **Users** → the user you already used for prod Terraform (the one that has `infra/prod/iam-policy.json` attached).
+   - **Security credentials** tab → **Access keys**. If you still have the secret from when you set up prod, reuse that pair. Only **Create access key** (use case: Command Line Interface) if you no longer have a secret — two live keys on one user is fine; do not email the secret.
+   - Back in PowerShell: `aws configure`
+     - AWS Access Key ID: paste the key id (`AKIA...`)
+     - AWS Secret Access Key: paste the secret
+     - Default region: `us-east-1`
+     - Default output format: `json`
+   - Re-run `aws sts get-caller-identity`. The `Arn` should look like `arn:aws:iam::<ACCOUNT_ID>:user/<your-terraform-user>`.
+
+Terraform on this laptop will pick up the same profile automatically. You do not pass keys into `terraform apply`.
+
+#### A. Widen the laptop IAM user (AWS)
+
+This policy is for **your** Terraform user (the identity `get-caller-identity` just printed). It is **not** the GitHub OIDC role `blobby-preview-gha` — that role is created in step B.
+
+Do **not** paste this JSON as an **inline** user policy. Inline policies are capped at 2,048 characters; [`iam-policy.json`](../infra/preview/foundation/iam-policy.json) is larger. Use a **customer-managed policy** (6,144 character limit).
+
+Console (no CLI required for this step):
+
+1. AWS Console → region **us-east-1** is irrelevant for IAM (global), but stay consistent.
+2. **IAM** → **Policies** → **Create policy** → **JSON** tab. Delete the sample. Paste the entire contents of `infra/preview/foundation/iam-policy.json`. Next.
+3. Name: `blobby-preview-foundation`. Create policy.
+4. **IAM** → **Users** → your Terraform user → **Add permissions** → **Attach policies directly** → search `blobby-preview-foundation` → Next → Add permissions.
+5. Leave the existing **prod** policy attached. Preview adds ECS, OIDC, extra IAM roles, and S3. Prod's policy does not grant those.
+
+CLI equivalent (from the repo root, after the CLI prereq works). Replace `YOUR_IAM_USER` with the name at the end of the `Arn` from `get-caller-identity`:
+
+```
+aws iam create-policy --policy-name blobby-preview-foundation --policy-document file://infra/preview/foundation/iam-policy.json
+aws iam attach-user-policy --user-name YOUR_IAM_USER --policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/blobby-preview-foundation
+```
+
+If `create-policy` says the policy already exists, skip to `attach-user-policy`. If the JSON path fails in PowerShell, use a full path: `file://E:/Desktop (E)/dev/blobby/infra/preview/foundation/iam-policy.json`.
+
+- [ ] **[Human]** Managed policy `blobby-preview-foundation` exists and is attached to the Terraform user. Prod policy still attached.
+
+#### B. Apply foundation (laptop, once)
+
+```
+cd infra/preview/foundation
+terraform init
+terraform apply
+```
+
+- [ ] **[Human]** Read the plan before typing `yes`. It must **create** an ECS cluster, a security group, a log group, IAM roles, an S3 bucket, and (usually) a GitHub OIDC provider. It must **not** create a VPC, subnet, Internet Gateway, EC2 instance, or Elastic IP.
+
+If apply dies with `EntityAlreadyExists` on `OpenIDConnectProvider` / `token.actions.githubusercontent.com`, the account already has GitHub OIDC (common). Import, then apply again:
+
+```
+aws sts get-caller-identity --query Account --output text
+terraform import aws_iam_openid_connect_provider.github arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com
+terraform apply
+```
+
+- [ ] **[Human]** Import the OIDC provider if apply hit `EntityAlreadyExists`, then apply succeeded.
+
+#### C. Confirm in the AWS console (us-east-1)
+
+After a green apply, you should see **all** of these, and no new machine:
+
+- [ ] **[Human]** **ECS** → Clusters → `blobby-preview`. Status Active. **Services: 0** until a PR exists. Capacity providers include FARGATE.
+- [ ] **[Human]** **EC2** → Security Groups → `blobby-preview`, VPC = the same VPC as `blobby-prod` (compare VPC ID with the prod instance). Inbound `8000/tcp` from `0.0.0.0/0`.
+- [ ] **[Human]** **EC2** → Instances: still **only** the prod instance. No new instance.
+- [ ] **[Human]** **IAM** → Roles → `blobby-preview-gha` (GitHub Actions) and `blobby-preview-execution` (ECS pulls GHCR + writes logs).
+- [ ] **[Human]** **IAM** → Identity providers → `token.actions.githubusercontent.com`, audience `sts.amazonaws.com`.
+- [ ] **[Human]** **S3** → bucket named in `terraform output tf_state_bucket`. Block Public Access on.
+- [ ] **[Human]** **CloudWatch** → Log groups → `/ecs/blobby-preview` (empty until a task runs).
+
+`blobby-preview-gha` trust relationships must include:
+
+- `aud` = `sts.amazonaws.com`
+- `sub` like `repo:jonesjac20/blobby:pull_request` (and the immutable `repo:jonesjac20@*/blobby@*:pull_request` form). PR jobs do **not** use `ref:refs/heads/...`.
+
+That role must **not** allow `ec2:TerminateInstances` / `ec2:StopInstances` / `ec2:RunInstances`.
+
+#### D. GitHub repo variables (not Secrets)
+
+- [ ] **[Human]** Repo → **Settings** → **Secrets and variables** → **Actions** → tab **Variables** → New repository variable. Paste `terraform output github_variables` (or the two outputs below):
+  - `PREVIEW_ROLE_ARN` — `arn:aws:iam::<ACCOUNT_ID>:role/blobby-preview-gha`
+  - `PREVIEW_TF_STATE_BUCKET` — the bucket name
+
+Region is hardcoded `us-east-1` in the workflow; no variable for that.
+
+#### E. First PR (prove Fargate, not a second host)
+
+- [ ] **[Both]** Branch, change a visible string, open a PR. Do not merge yet.
+- [ ] **[Human]** **Actions**: workflow **Preview** runs on `ubuntu-latest`. It must **not** say `self-hosted` / `blobby-prod`.
+- [ ] **[Human]** When the job comments a URL: open it, play a round. That host is the Fargate task's public IP, **not** the Elastic IP.
+- [ ] **[Human]** AWS **ECS** → cluster `blobby-preview` → service `blobby-pr-<n>` → one task. **Launch type: Fargate**. Task public IP matches the comment. Network: prod VPC / prod public subnet / SG `blobby-preview`.
+- [ ] **[Human]** Load production (`http://<elastic-ip>:8000`). It must still be `main` (old string). **EC2 instance count unchanged.**
+- [ ] **[Human]** Close (or merge) the PR. Actions runs teardown. ECS service/task gone. Prod URL unchanged.
+
+#### F. If it fails
+
+- **`Could not assume role` / `Not authorized to perform sts:AssumeRoleWithWebIdentity`:** This is the role **trust policy** (who may assume `blobby-preview-gha`), not a missing ECS/S3 action. Confirm GitHub Variable `PREVIEW_ROLE_ARN` is `arn:aws:iam::<ACCOUNT_ID>:role/blobby-preview-gha`. The role must allow `aud=sts.amazonaws.com` and `sub` `repo:jonesjac20/blobby:pull_request` (or the immutable `repo:jonesjac20@*/blobby@*:pull_request` form). Do not require `job_workflow_ref` — that claim is for reusable workflows and is often missing, which makes STS deny the assume. After changing `infra/preview/foundation`, `terraform apply` there again (updates the role in place). Workflow permission `id-token: write` is in the YAML; you do not toggle that in the UI.
+- **`EntityAlreadyExists` OIDC:** step B import.
+- **`CannotPullContainerError`:** GHCR not public, or image tag `pr-<n>-<sha>` missing (build job failed before push).
+- **`/healthz` never 200:** ECS task stopped. CloudWatch `/ecs/blobby-preview` for the Python traceback. SG must allow 8000 from `0.0.0.0/0` (GitHub-hosted curl comes from the internet).
+- **Job ran on `blobby-prod`:** `preview.yml` `runs-on` is wrong; stop and fix — that runner is production.
+- **`Unable to assume the service linked role` on `aws_ecs_service`:** the account has never used ECS, so `AWSServiceRoleForECS` is missing. GitHub cannot create it. On the tower: update managed policy `blobby-preview-foundation` from `iam-policy.json`, then `cd infra/preview/foundation && terraform apply`. Fast path: `aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com` then, if Terraform did not create it, `terraform import aws_iam_service_linked_role.ecs ecs.amazonaws.com`. Re-run the Preview job.
+- **`s3:GetBucketCORS` / `AccessDenied` on the state bucket during `terraform apply`:** the AWS provider reads extra bucket attributes after create. Update the managed policy `blobby-preview-foundation` from [`iam-policy.json`](../infra/preview/foundation/iam-policy.json) (use **s3:*** on that bucket only, not an inline policy), then `terraform apply` again. If the bucket already exists in S3 but not in state: `terraform import aws_s3_bucket.state blobby-preview-tfstate-<ACCOUNT_ID>` then apply.
+
+#### G. Cost and teardown
+
+You pay for Fargate (0.25 vCPU / 0.5 GB) and a public IPv4 **while a PR is open**. Close PRs you are not using. Foundation (cluster, SG, empty log group, S3) is nearly free idle; the ECS cluster itself has no hourly charge.
+
+To remove preview **foundation** later (optional): close all preview PRs first, then `cd infra/preview/foundation && terraform destroy`. That must not delete the prod VPC/EC2. Never destroy `infra/prod` to "clean up previews."
 
 ---
 
@@ -153,6 +288,12 @@ The preview smoke curl wants `/healthz`. If Phase 10 has not landed that route y
 - **`deploy.yml` is `workflow_call`; `needs: build` lives on the `ci.yml` caller.** GitHub `needs:` is intra-workflow only. A standalone `on: push` deploy file cannot wait for Phase 9's `build` job. PRs still never deploy: `build` is skipped off `main`, and a skipped `needs` skips `deploy`.
 - **Deploy pins the git SHA, not only `latest`.** Parallel `build` jobs on GitHub-hosted runners can retag `latest` out of order. `BLOBBY_IMAGE_TAG=${{ github.sha }}` in `deploy.yml` (Compose default remains `latest` for a Human first bring-up) plus `concurrency` on `ci.yml` close that window. `runs-on` also requires `blobby-prod` so a leftover home-VM runner cannot take the job.
 - **`infra/prod/` creates its own public VPC.** The annex sketch allows default VPC *or* one public subnet. This AWS account has no default VPC in `us-east-1`, so Terraform owns a `/16` + public subnet + IGW instead of looking up `default = true`.
+- **Preview Fargate uses the existing prod VPC, not a default VPC and not a second preview VPC.** A VPC per PR would hit the regional quota (prod already uses one). Foundation looks up `Name=blobby-prod` / `blobby-prod-public` and creates only a preview SG in that VPC. Do not `terraform destroy` prod while a preview task is running.
+- **Preview Terraform state lives in S3.** GitHub-hosted runners discard their disk when the job ends, so a local `terraform.tfstate` (or workspace) cannot survive from `synchronize` to `closed`. One object per PR: `preview/pr-<n>/terraform.tfstate`. This is not a reason to add a self-hosted runner.
+- **Preview image tag is `pr-<n>-<sha>`, not a mutable `pr-N` alone.** Re-pushing the same tag does not change the task-definition `image`, so ECS would keep the old task. `force_new_deployment = true` and `deployment_minimum_healthy_percent = 0`.
+- **Preview is a separate workflow; `ci.yml` is unchanged.** `ci.yml` is test-always plus build+deploy on `main` only. Its `cancel-in-progress: true` would interrupt `terraform apply`. Preview re-runs pytest/ruff itself.
+- **Preview OIDC `sub` is `repo:OWNER/REPO:pull_request` (or the immutable `OWNER@id/REPO@id` form).** PR jobs do not present `ref:refs/heads/...`. Do not require `job_workflow_ref` on a non-reusable workflow; a missing claim fails the whole trust statement.
+- **Preview smokes `/healthz`, not `/`.** Phase 10 already landed the route.
 
 ---
 

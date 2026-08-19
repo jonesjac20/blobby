@@ -1,0 +1,203 @@
+# Phase 14 PR preview. GitHub-hosted only — never the production
+# self-hosted runner. Builds a unique pr-<n>-<sha> image (never latest),
+# applies per-PR Fargate Terraform in the existing prod VPC, comments
+# the task URL, and destroys on PR close.
+name: Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: preview-${{ github.event.number }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  test:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Tests
+        run: pytest
+      - name: Lint
+        run: ruff check .
+
+  deploy:
+    if: github.event.action != 'closed'
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      # vars.* is null if the name is wrong, it was created as a Secret,
+      # or it lives on an Environment this job does not use. Fallback is
+      # the foundation bucket: blobby-preview-tfstate-<account-id>.
+      PREVIEW_TF_STATE_BUCKET: ${{ vars.PREVIEW_TF_STATE_BUCKET || 'blobby-preview-tfstate-423623831361' }}
+    defaults:
+      run:
+        working-directory: infra/preview/service
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        working-directory: .
+      - name: Build and push unique tag
+        working-directory: .
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          IMAGE="${IMAGE,,}"
+          TAG="pr-${{ github.event.number }}-${{ github.sha }}"
+          docker build -t "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
+          echo "IMAGE=$IMAGE:$TAG" >> "$GITHUB_ENV"
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PREVIEW_ROLE_ARN }}
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Terraform apply
+        run: |
+          echo "tfstate bucket: ${PREVIEW_TF_STATE_BUCKET}"
+          terraform init -input=false \
+            -backend-config="bucket=${PREVIEW_TF_STATE_BUCKET}" \
+            -backend-config="key=preview/pr-${{ github.event.number }}/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+          terraform apply -input=false -auto-approve \
+            -var="image=${IMAGE}" \
+            -var="pr_number=${{ github.event.number }}"
+      - name: Wait for /healthz
+        working-directory: .
+        run: |
+          URL="$(bash scripts/preview_task_url.sh blobby-preview "blobby-pr-${{ github.event.number }}")"
+          IP="${URL#http://}"
+          IP="${IP%:8000}"
+          echo "PREVIEW_URL=$URL" >> "$GITHUB_ENV"
+          echo "PREVIEW_IP=$IP" >> "$GITHUB_ENV"
+          echo "::notice title=Preview public IP::$IP"
+          echo "Play at: $URL"
+          echo "Fargate public IP: $IP  (not the production Elastic IP)"
+          {
+            echo "## Preview (not production)"
+            echo ""
+            echo "Play at: $URL"
+            echo ""
+            echo "This task's public IP is \`$IP\`. A new push replaces the task and the IP."
+          } >> "$GITHUB_STEP_SUMMARY"
+          for i in $(seq 1 15); do
+            if curl -fsS --max-time 2 "$URL/healthz"; then
+              echo "healthz 200 at $URL/healthz (IP $IP)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "healthz did not return 200 at $URL/healthz (IP $IP)" >&2
+          exit 1
+      - name: Comment preview URL
+        env:
+          PREVIEW_URL: ${{ env.PREVIEW_URL }}
+          PREVIEW_IP: ${{ env.PREVIEW_IP }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- blobby-preview -->';
+            const url = process.env.PREVIEW_URL;
+            const ip = process.env.PREVIEW_IP;
+            const body = [
+              marker,
+              '**Preview (not production).** Ephemeral Fargate task for this PR.',
+              '',
+              `Play at: ${url}`,
+              '',
+              `This task's public IP is \`${ip}\`. Ignore older IPs; each push can change it.`,
+              '',
+              'Production is the Elastic IP / domain. This URL dies when the PR closes.',
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  teardown:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      PREVIEW_TF_STATE_BUCKET: ${{ vars.PREVIEW_TF_STATE_BUCKET || 'blobby-preview-tfstate-423623831361' }}
+    defaults:
+      run:
+        working-directory: infra/preview/service
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PREVIEW_ROLE_ARN }}
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Terraform destroy
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${PREVIEW_TF_STATE_BUCKET}" \
+            -backend-config="key=preview/pr-${{ github.event.number }}/terraform.tfstate" \
+            -backend-config="region=us-east-1"
+          terraform destroy -input=false -auto-approve \
+            -var="image=placeholder" \
+            -var="pr_number=${{ github.event.number }}"
+      - name: Comment teardown
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- blobby-preview -->';
+            const body = [
+              marker,
+              '**Preview destroyed.** The Fargate task for this PR is gone. Production was not touched.',
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            }

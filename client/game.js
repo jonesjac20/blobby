@@ -22,11 +22,16 @@ import {
   resizeCanvas,
   screenToWorld,
   speedForMass,
-  worldToScreen,
 } from "./render.js";
 
 const FOLLOW_SMOOTHING = 6;
+// Floor on the stop radius, in screen pixels. The real stop distance is one
+// tick of travel (see maybeSendInput): 8px is smaller than that at play zoom,
+// so a parked cursor used to be jumped over and the unit vector reversed.
 const DEADZONE_PX = 8;
+// Pointer must move this far from the park point before we leave rest. Blob
+// wander from prediction / snapshot correction must not re-aim a still mouse.
+const REST_RESUME_PX = 12;
 const MAX_DT = 0.1;
 // Same ceiling as MAX_TICK_SECONDS: a hitch must not fire the predicted body
 // across the map.
@@ -99,6 +104,8 @@ let latestFood = [];
 
 /** @type {{ x: number, y: number } | null} */
 let pointer = null;
+/** @type {{ x: number, y: number } | null} */
+let restPointer = null;
 let lastSentDx = 0;
 let lastSentDy = 0;
 /** @type {number | null} */
@@ -169,6 +176,7 @@ function resetPrediction() {
   lastSentDy = 0;
   lastReportedDx = null;
   lastReportedDy = null;
+  restPointer = null;
   predictError = new Map();
   lastPredictedPieces = null;
   lastPredictedIds = null;
@@ -400,15 +408,36 @@ function maybeSendInput(snapshot, viewport) {
 
   const centroid = playerCentroid(player);
   if (!centroid) return;
-  const origin = worldToScreen(camera, viewport, centroid.x, centroid.y);
-  const px = pointer.x - origin.x;
-  const py = pointer.y - origin.y;
-  const dist = Math.hypot(px, py);
+
+  // Aim in world space. The server treats (dx, dy) as a direction at full
+  // speed_for_mass, never a throttle, so a parked cursor is only reachable by
+  // sending (0, 0) before a tick of travel would carry the body through it.
+  const cursor = screenToWorld(camera, viewport, pointer.x, pointer.y);
+  const wx = cursor.x - centroid.x;
+  const wy = cursor.y - centroid.y;
+  const worldDist = Math.hypot(wx, wy);
+  const speed = speedForMass(playerMass(player), speedKnobs());
+  const scale = camera.scale > 0 ? camera.scale : 1;
+  const stopWorld = Math.max(speed * tickSeconds, DEADZONE_PX / scale);
+
+  const atRest = lastSentDx === 0 && lastSentDy === 0;
+  const pointerShift = restPointer
+    ? Math.hypot(pointer.x - restPointer.x, pointer.y - restPointer.y)
+    : Infinity;
+
   let dx = 0;
   let dy = 0;
-  if (dist >= DEADZONE_PX) {
-    dx = px / dist;
-    dy = py / dist;
+  if (atRest && pointerShift < REST_RESUME_PX) {
+    // Pointer has not moved. Snapshot correction and prediction error can
+    // shove the drawn centroid around a still cursor; that must not flip the
+    // unit vector, or the blob orbits the mouse — worse over the net, where
+    // the body coasts on the last input for half an RTT after we stop.
+  } else if (worldDist >= stopWorld) {
+    dx = wx / worldDist;
+    dy = wy / worldDist;
+    restPointer = null;
+  } else {
+    restPointer = { x: pointer.x, y: pointer.y };
   }
 
   lastSentDx = dx;
@@ -492,18 +521,75 @@ function predictSelf(interpolated, now, frameDt) {
   const clusterSpeed = speedForMass(playerMass(source), knobs);
   const split = source.pieces.length >= 2;
   const drawn = new Map();
+  const cursor =
+    pointer && lastDraw
+      ? screenToWorld(camera, lastDraw.viewport, pointer.x, pointer.y)
+      : null;
 
-  const pieces = source.pieces.map((piece) => {
+  const planned = source.pieces.map((piece) => {
     const mergeReady = split && !(piece.remerge_in > 0);
     const speed = mergeReady ? clusterSpeed : speedForMass(piece.mass, knobs);
     let err = predictError.get(piece.piece_id) || { x: 0, y: 0 };
     err = { x: err.x * decay, y: err.y * decay };
     predictError.set(piece.piece_id, err);
-    const rawX = piece.x + lastSentDx * speed * predictDt + err.x;
-    const rawY = piece.y + lastSentDy * speed * predictDt + err.y;
-    const clamped = clampBodyPosition(rawX, rawY, piece.mass, world);
-    drawn.set(piece.piece_id, clamped);
-    return { ...piece, x: clamped.x, y: clamped.y };
+    return {
+      piece,
+      err,
+      travelX: lastSentDx * speed * predictDt,
+      travelY: lastSentDy * speed * predictDt,
+    };
+  });
+
+  // Dead-reckoning is full speed along last input, and over the net predictDt
+  // can be several ticks. Clamp the cluster so its centroid cannot coast
+  // through the cursor — that overshoot is what flipped the aim vector.
+  if (cursor && (lastSentDx !== 0 || lastSentDy !== 0)) {
+    let fromX = 0;
+    let fromY = 0;
+    let toX = 0;
+    let toY = 0;
+    let total = 0;
+    for (const row of planned) {
+      const mass = row.piece.mass;
+      total += mass;
+      const sx = row.piece.x + row.err.x;
+      const sy = row.piece.y + row.err.y;
+      fromX += sx * mass;
+      fromY += sy * mass;
+      toX += (sx + row.travelX) * mass;
+      toY += (sy + row.travelY) * mass;
+    }
+    if (total > 0) {
+      fromX /= total;
+      fromY /= total;
+      toX /= total;
+      toY /= total;
+      const movX = toX - fromX;
+      const movY = toY - fromY;
+      const toCx = cursor.x - fromX;
+      const toCy = cursor.y - fromY;
+      const movLen = Math.hypot(movX, movY);
+      const aimLen = Math.hypot(toCx, toCy);
+      if (
+        movLen > aimLen &&
+        movLen > 1e-9 &&
+        movX * toCx + movY * toCy > 0
+      ) {
+        const scale = aimLen / movLen;
+        for (const row of planned) {
+          row.travelX *= scale;
+          row.travelY *= scale;
+        }
+      }
+    }
+  }
+
+  const pieces = planned.map((row) => {
+    const rawX = row.piece.x + row.travelX + row.err.x;
+    const rawY = row.piece.y + row.travelY + row.err.y;
+    const clamped = clampBodyPosition(rawX, rawY, row.piece.mass, world);
+    drawn.set(row.piece.piece_id, clamped);
+    return { ...row.piece, x: clamped.x, y: clamped.y };
   });
 
   lastPredictedPieces = drawn;

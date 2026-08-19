@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (gitignored) only if you need to override defaults.
+#   copy terraform.tfvars.example terraform.tfvars
+#
+# Human steps (IAM attach, apply, GitHub variables, first PR) are the
+# Phase 14 Human runbook in docs/phase8-annex.md. Do not create a VPC
+# or EC2 here. Do not register a GitHub runner.
+#
+# Attach iam-policy.json as a customer-managed policy (not inline —
+# inline is capped at 2048 chars). See docs/phase8-annex.md Phase 14
+# Human runbook, then:
+#   terraform init && terraform apply
+
+region             = "us-east-1"
+name               = "blobby-preview"
+prod_vpc_name      = "blobby-prod"
+github_repository  = "jonesjac20/blobby"
