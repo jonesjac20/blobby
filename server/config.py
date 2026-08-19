@@ -78,7 +78,7 @@ BASE_SPEED = 150
 # Six radii at mass 100 is ~34 world units - several blob widths, the pop the
 # old flat kick was tuned for. Heavier parents lunge farther; a hard cap below
 # keeps a giant from crossing the map in one press.
-SPLIT_KICK_RADII = 6.0
+SPLIT_KICK_RADII = 3
 # Cap on kick displacement, as a fraction of the shorter arena axis. Derived at
 # call time from WORLD_WIDTH / WORLD_HEIGHT so resizing the rectangle moves it.
 SPLIT_KICK_MAX_ARENA_FRACTION = 0.15
@@ -88,7 +88,7 @@ SPLIT_KICK_MAX_ARENA_FRACTION = 0.15
 SPEED_FALLOFF = 0.25
 # Floor as a fraction of BASE_SPEED. Without it, (mass ** -SPEED_FALLOFF) goes
 # toward zero and a giant cannot cross the map.
-SPEED_FLOOR_FRACTION = 0.25
+SPEED_FLOOR_FRACTION = 0.2
 
 # --- soft-body cluster and collision ---------------------------------------
 #
@@ -108,7 +108,7 @@ EAT_OVERLAP = 0.5
 MERGE_OVERLAP = 0.6
 
 # World units per second each of a player's pieces drifts toward its neighbours.
-COHESION_SPEED = 12.0
+COHESION_SPEED = 4.0
 # World units per second once a pair's remerge timer clears, at zero gap.
 # Close in, this is the whole pull: a resting pair still sinks over several
 # ticks rather than snapping. Far out, MERGE_RECALL adds to it.
@@ -117,7 +117,7 @@ MERGE_PULL_SPEED = 8.0
 # A fragment 100 units out closes at MERGE_PULL_SPEED + 100 * MERGE_RECALL, so
 # a split that drifted off still returns once the timer clears. Linear in
 # distance, so the time to arrive stays bounded even across a large world.
-MERGE_RECALL = 3.0
+MERGE_RECALL = 4.0
 # Position-projection rounds per tick. Projection is dt-independent, so this is
 # the only knob deciding how firmly a crowded cluster is pushed apart.
 SEPARATION_PASSES = 2
