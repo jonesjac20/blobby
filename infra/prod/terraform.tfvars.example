@@ -6,7 +6,7 @@
 #   curl -4 https://ifconfig.me
 # key_name: aws ec2 create-key-pair --key-name blobby-prod ...
 #
-# instance_type: t3.small (2 GB) is required for the always-on 30-bot lobby.
+# instance_type: t3.small (2 GB) is required for the always-on 24-bot lobby.
 # t3.micro (1 GB) OOMs. If tick hz= stays well below 30, bump to t3.medium.
 #
 # Then: terraform init && terraform apply

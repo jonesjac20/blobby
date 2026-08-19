@@ -80,7 +80,7 @@ resource "aws_ecs_task_definition" "preview" {
       command = [
         "sh",
         "-c",
-        "while true; do python -m bots.simple_bot --url http://127.0.0.1:8000/ws --name bot --count 30; sleep 2; done"
+        "while true; do python -m bots.simple_bot --url http://127.0.0.1:8000/ws --name bot --count 24; sleep 2; done"
       ]
       logConfiguration = {
         logDriver = "awslogs"

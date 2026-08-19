@@ -71,16 +71,27 @@ SPAWN_INVULN_SECONDS = 5.0
 
 # Mass caps. A snowballing life peels down to remnant mass and dumps the
 # rest into a socket-less inert player. No age trigger: mass does not drain
-# except by being eaten. Bots cap earlier than humans so a 30-bot lobby
+# except by being eaten. Bots cap earlier than humans so a 24-bot lobby
 # recycles giants without waiting for a player-sized snowball.
 BOT_BURST_MASS = 55000.0
 BOT_BURST_REMNANT_MASS = 1000.0
 PLAYER_BURST_MASS = 75000.0
 PLAYER_BURST_REMNANT_MASS = 1500.0
-# Inert corpses auto-split on this interval. Live REMERGE_SECONDS is unrelated.
-BURST_SPLIT_SECONDS = 12.0
-# Tick-loop fuse: unconstrained doubling from ~54k mass would stall 30Hz.
-BURST_PIECE_GUARD = 256
+# One shatter per burst, then freeze. No further splits.
+BURST_SHARDS = 6
+# Uneven mix: each shard's share of excess, before min-mass 1.
+BURST_SHARD_MIN_FRACTION = 0.05
+BURST_SHARD_MAX_FRACTION = 0.40
+# Extra outward travel past remnant+shard+nav-gap clearance, in
+# BURST_NAV_REFERENCE_MASS radii. Independent per shard.
+BURST_EXPLODE_EXTRA_NAV_RADII = 4.0
+BURST_SHARD_ANGLE_JITTER = 0.15
+BURST_KICK_SCALE_MIN = 0.85
+BURST_KICK_SCALE_MAX = 1.15
+# Global fuse: 24 bots * BURST_SHARDS. A second wave evicts oldest corpses.
+INERT_PIECE_CAP = 144
+# Pellets spawned when a corpse is evicted. Remainder of that mass is discarded.
+INERT_EVICT_FOOD_MAX = 24
 # Extra rim-to-rim gap when placing an inert fragment, as 2 * radius(400), so
 # a medium blob can pass between the halves.
 BURST_NAV_REFERENCE_MASS = 400.0

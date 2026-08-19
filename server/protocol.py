@@ -30,6 +30,11 @@ from server.models import Player
 from server.world import World
 
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+JSON_SEPARATORS = (",", ":")
+
+
+def encode_json(payload: dict) -> str:
+    return json.dumps(payload, separators=JSON_SEPARATORS)
 
 
 @dataclass
@@ -56,33 +61,33 @@ class ClientSession:
 class FoodStream:
     """Change-gated food broadcast. One shared payload, a version per socket.
 
-    Pellets have no velocity, so comparing the id set once per tick catches
-    every change. The payload is bare `[x, y]` integer pairs — food has no
-    radius in the simulation, so a half-unit shift is sub-pixel at play zoom,
-    and dropping the 32-hex ids is what makes the message small enough to send
-    at all. `encoded` is that payload dumped once; `_emit` sends the string to
-    every behind socket rather than `json.dumps` per socket. A later per-pellet
-    delta is a drop-in on this same message type.
+    Pellets have no velocity, so `World.food_epoch` catches every change
+    without allocating a frozenset of ids each tick. The payload is bare
+    `[x, y]` integer pairs — food has no radius in the simulation, so a
+    half-unit shift is sub-pixel at play zoom, and dropping the 32-hex ids is
+    what makes the message small enough to send at all. `encoded` is that
+    payload dumped once; `_emit` sends the string to every behind socket
+    rather than `json.dumps` per socket. A later per-pellet delta is a
+    drop-in on this same message type.
     """
 
     def __init__(self) -> None:
         self.version = 0
-        self._ids: frozenset[str] = frozenset()
+        self._epoch = 0
         self.payload: dict = {"type": "food", "version": 0, "food": []}
-        self.encoded: str = json.dumps(self.payload)
+        self.encoded: str = encode_json(self.payload)
 
     def refresh(self, world: World) -> None:
-        current = frozenset(world.food)
-        if current == self._ids:
+        if world.food_epoch == self._epoch:
             return
-        self._ids = current
+        self._epoch = world.food_epoch
         self.version += 1
         self.payload = {
             "type": "food",
             "version": self.version,
             "food": [[round(f.x), round(f.y)] for f in world.food.values()],
         }
-        self.encoded = json.dumps(self.payload)
+        self.encoded = encode_json(self.payload)
 
 
 def normalize_name(value: object) -> str:
@@ -194,10 +199,14 @@ def serialize_state(world: World) -> dict:
                 "pieces": [
                     {
                         "piece_id": piece.piece_id,
-                        "x": piece.x,
-                        "y": piece.y,
-                        "mass": piece.mass,
-                        "remerge_in": round(simulation.remerge_in(world, piece), 2),
+                        "x": round(piece.x, 2),
+                        "y": round(piece.y, 2),
+                        "mass": round(piece.mass, 1),
+                        "remerge_in": (
+                            0
+                            if player.inert
+                            else round(simulation.remerge_in(world, piece), 2)
+                        ),
                     }
                     for piece in player.pieces
                 ],

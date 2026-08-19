@@ -344,13 +344,17 @@ def test_stale_game_over_is_dropped_if_the_socket_already_respawned():
         class FakeWS:
             closed = False
 
-            async def send_json(self, payload: dict) -> None:
-                if payload.get("type") == "state":
+            async def send_str(self, payload: str) -> None:
+                data = json.loads(payload)
+                if data.get("type") == "state":
                     handle_join(
                         world,
                         session,
                         {"type": "join", "name": "A", "color": DEFAULT_COLOR},
                     )
+                sent.append(data)
+
+            async def send_json(self, payload: dict) -> None:
                 sent.append(payload)
 
         session.ws = FakeWS()
@@ -368,6 +372,9 @@ def _recording_session(world: World, joined: bool) -> tuple[ClientSession, list[
 
     class FakeWS:
         closed = False
+
+        async def send_str(self, payload: str) -> None:
+            sent.append(json.loads(payload))
 
         async def send_json(self, payload: dict) -> None:
             sent.append(payload)
@@ -622,6 +629,7 @@ def test_food_is_sent_once_then_not_resent_while_unchanged():
     async def body():
         world = World(seed=0, food_target=0)
         world.food["a"] = Food(id="a", x=10.4, y=20.6)
+        world.food_epoch += 1
         async with connected_app(world) as (app, client):
             ws = await client.ws_connect("/ws")
             await emit_tick(app, DT)
@@ -643,6 +651,7 @@ def test_eating_a_pellet_resends_food():
     async def body():
         world = World(seed=0, food_target=0)
         world.food["pellet"] = Food(id="pellet", x=500.0, y=500.0)
+        world.food_epoch += 1
         async with connected_app(world) as (app, client):
             ws = await client.ws_connect("/ws")
             await emit_tick(app, DT)
@@ -666,6 +675,7 @@ def test_a_late_joiner_receives_the_current_food_field():
     async def body():
         world = World(seed=0, food_target=0)
         world.food["a"] = Food(id="a", x=30.0, y=40.0)
+        world.food_epoch += 1
         async with connected_app(world) as (app, client):
             first = await client.ws_connect("/ws")
             await emit_tick(app, DT)
@@ -690,6 +700,7 @@ def test_a_failed_food_send_is_retried_without_advancing_the_cursor():
     async def body():
         world = World(seed=0, food_target=0)
         world.food["a"] = Food(id="a", x=1.0, y=2.0)
+        world.food_epoch += 1
         stream = FoodStream()
         stream.refresh(world)
         session = ClientSession()

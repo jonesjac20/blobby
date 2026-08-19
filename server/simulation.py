@@ -2,8 +2,10 @@
 
 step(world, dt) performs, in order: advance sim time -> apply input and kick ->
 cluster forces -> resolve collisions and clamp to bounds -> collide with food ->
-collide with other players -> decay split velocity -> remerge -> respawn food,
-eating any pellet that landed inside a disc and refilling until none do.
+collide with other players -> mass-cap burst (shatter excess into frozen inert
+shards) -> decay split velocity -> remerge -> enforce inert piece cap ->
+respawn food, eating any pellet that landed inside a disc and refilling until
+none do.
 
 Pieces have real bodies here, and every geometric test is a threshold on
 `engulfment` rather than a plain circle touch, so contact and penetration can
@@ -19,8 +21,14 @@ import math
 from server.config import (
     BOT_BURST_MASS,
     BOT_BURST_REMNANT_MASS,
-    BURST_PIECE_GUARD,
-    BURST_SPLIT_SECONDS,
+    BURST_EXPLODE_EXTRA_NAV_RADII,
+    BURST_KICK_SCALE_MAX,
+    BURST_KICK_SCALE_MIN,
+    BURST_NAV_REFERENCE_MASS,
+    BURST_SHARD_ANGLE_JITTER,
+    BURST_SHARD_MAX_FRACTION,
+    BURST_SHARD_MIN_FRACTION,
+    BURST_SHARDS,
     PLAYER_BURST_MASS,
     PLAYER_BURST_REMNANT_MASS,
     COHESION_SPEED,
@@ -29,6 +37,8 @@ from server.config import (
     FOOD_COUNT,
     FOOD_GRID_CELL,
     FOOD_MASS,
+    INERT_EVICT_FOOD_MAX,
+    INERT_PIECE_CAP,
     MAX_PIECES,
     MERGE_OVERLAP,
     MERGE_PULL_SPEED,
@@ -186,7 +196,7 @@ def step(world: World, dt: float) -> None:
     _apply_mass_bursts(world)
     _decay_split_kicks(world)
     _remerge_pieces(world)
-    _split_inert(world)
+    _enforce_inert_piece_cap(world)
     _refill_food(world)
 
 
@@ -203,6 +213,14 @@ def _cluster_centroid(pieces: list[Piece]) -> tuple[float, float]:
 
 def _apply_input_and_move(world: World, previous_now: float, dt: float) -> None:
     for player in world.players.values():
+        if player.inert:
+            for piece in player.pieces:
+                kick_seconds = _kick_integral(
+                    previous_now - piece.split_time, world.now - piece.split_time
+                )
+                piece.x += piece.initial_kick_vx * kick_seconds
+                piece.y += piece.initial_kick_vy * kick_seconds
+            continue
         input_x, input_y = _normalized(*player.last_input)
         # Merge-ready pieces steer at the whole body's pace so a light leftover
         # cannot outrun the core it is supposed to sink into.
@@ -557,6 +575,8 @@ def _eat_food(
                     eaten.add(food.id)
     for food_id in eaten:
         del world.food[food_id]
+    if eaten:
+        world.food_epoch += 1
 
 
 def _refill_food(world: World) -> None:
@@ -760,7 +780,6 @@ def _burst_player(world: World, player: Player, remnant_mass: float) -> None:
     player.last_total_mass = max(player.last_total_mass, total)
     cx, cy = _player_centroid(player)
     rx, ry = clamp_body_position(cx, cy, remnant)
-    ix, iy = clamp_body_position(cx, cy, excess)
 
     player.pieces = [
         Piece(piece_id=world.new_id(), x=rx, y=ry, mass=remnant)
@@ -768,77 +787,130 @@ def _burst_player(world: World, player: Player, remnant_mass: float) -> None:
 
     corpse = world.spawn_player(
         unique_name(world, player.name),
-        x=ix,
-        y=iy,
+        x=rx,
+        y=ry,
         mass=excess,
         color=player.color,
         inert=True,
     )
     corpse.last_burst_split = world.now
+    _shatter_inert(world, corpse, rx, ry, remnant)
 
 
-def _split_inert(world: World) -> None:
-    """Halve every inert piece with mass >= 2, every BURST_SPLIT_SECONDS."""
-    # Extra rim-to-rim gap when placing an inert fragment, as 2 * radius(400), so
-    # a medium blob can pass between the halves. Meant to create "canyons" between corpses.
-    gap = burst_nav_gap()
-    for player in world.players.values():
-        if not player.inert:
-            continue
-        if world.now - player.last_burst_split < BURST_SPLIT_SECONDS:
-            continue
-        if len(player.pieces) >= BURST_PIECE_GUARD:
-            log.warning(
-                "inert burst piece guard hit name=%s pieces=%d",
-                player.name,
-                len(player.pieces),
-            )
-            player.last_burst_split = world.now
-            continue
-        created = _inert_split(world, player, gap)
-        if created or all(piece.mass < 2.0 for piece in player.pieces):
-            player.last_burst_split = world.now
-
-
-def _inert_split(world: World, player: Player, gap: float) -> int:
-    """Split every current piece whose half would be at least 1. Ignore MAX_PIECES."""
-    created = 0
-    parents = list(player.pieces)
-    for parent in parents:
-        if len(player.pieces) >= BURST_PIECE_GUARD:
-            log.warning(
-                "inert burst piece guard hit name=%s pieces=%d",
-                player.name,
-                len(player.pieces),
-            )
+def _shard_masses(world: World, excess: float, count: int) -> list[float]:
+    """Uneven masses summing to `excess`. Each share is about 5–40% when it fits."""
+    n = min(max(count, 1), max(1, int(excess)))
+    if n == 1:
+        return [excess]
+    min_share = max(1.0, excess * BURST_SHARD_MIN_FRACTION)
+    max_share = max(min_share, excess * BURST_SHARD_MAX_FRACTION)
+    masses: list[float] = []
+    remaining = excess
+    for left in range(n, 0, -1):
+        if left == 1:
+            masses.append(remaining)
             break
-        if parent.mass < 2.0:
-            continue
-        parent_mass = parent.mass
-        half = parent_mass / 2.0
-        angle = world.rng.uniform(0.0, 2.0 * math.pi)
-        ux, uy = math.cos(angle), math.sin(angle)
-        offset = 2.0 * radius_for_mass(half) + gap
+        floor = min_share
+        # Leave at least 1 mass for each remaining slot after this one,
+        # and leave enough that later slots can still be <= max_share.
+        floor = max(floor, remaining - max_share * (left - 1))
+        ceiling = min(max_share, remaining - 1.0 * (left - 1))
+        if ceiling < floor:
+            floor = ceiling = remaining / left
+        masses.append(world.rng.uniform(floor, ceiling))
+        remaining -= masses[-1]
+    drift = excess - sum(masses)
+    masses[-1] += drift
+    return masses
 
-        parent.mass = half
-        parent.split_time = world.now
-        parent.vx = parent.vy = 0.0
-        parent.initial_kick_vx = parent.initial_kick_vy = 0.0
 
-        kick = split_kick_speed(parent_mass)
-        child = Piece(
-            piece_id=world.new_id(),
-            x=parent.x + ux * offset,
-            y=parent.y + uy * offset,
-            mass=half,
-            vx=kick * ux,
-            vy=kick * uy,
-            initial_kick_vx=kick * ux,
-            initial_kick_vy=kick * uy,
-            split_time=world.now,
+def _shatter_inert(
+    world: World,
+    corpse: Player,
+    remnant_x: float,
+    remnant_y: float,
+    remnant_mass: float,
+) -> None:
+    """Replace the single excess disc with BURST_SHARDS exploded pieces."""
+    if not corpse.pieces:
+        return
+    excess = sum(piece.mass for piece in corpse.pieces)
+    masses = _shard_masses(world, excess, BURST_SHARDS)
+    n = len(masses)
+    gap = burst_nav_gap()
+    remnant_r = radius_for_mass(remnant_mass)
+    nav_r = radius_for_mass(BURST_NAV_REFERENCE_MASS)
+    max_shard_r = max(radius_for_mass(mass) for mass in masses)
+    neighbor_need = 0.0
+    if n >= 2:
+        neighbor_need = (2.0 * max_shard_r + gap) / (2.0 * math.sin(math.pi / n))
+
+    shards: list[Piece] = []
+    for index, mass in enumerate(masses):
+        shard_r = radius_for_mass(mass)
+        min_d = max(
+            remnant_r + shard_r + gap,
+            neighbor_need,
         )
-        child.x, child.y = clamp_body_position(child.x, child.y, child.mass)
-        parent.x, parent.y = clamp_body_position(parent.x, parent.y, parent.mass)
-        player.pieces.append(child)
-        created += 1
-    return created
+        max_d = min_d + BURST_EXPLODE_EXTRA_NAV_RADII * nav_r
+        distance = world.rng.uniform(min_d, max_d)
+        base = 2.0 * math.pi * index / n
+        angle = base + world.rng.uniform(
+            -BURST_SHARD_ANGLE_JITTER, BURST_SHARD_ANGLE_JITTER
+        )
+        ux, uy = math.cos(angle), math.sin(angle)
+        x, y = clamp_body_position(
+            remnant_x + ux * distance, remnant_y + uy * distance, mass
+        )
+        kick = split_kick_speed(mass) * world.rng.uniform(
+            BURST_KICK_SCALE_MIN, BURST_KICK_SCALE_MAX
+        )
+        shards.append(
+            Piece(
+                piece_id=world.new_id(),
+                x=x,
+                y=y,
+                mass=mass,
+                vx=kick * ux,
+                vy=kick * uy,
+                initial_kick_vx=kick * ux,
+                initial_kick_vy=kick * uy,
+                split_time=world.now,
+            )
+        )
+    corpse.pieces = shards
+
+
+def _inert_piece_count(world: World) -> int:
+    return sum(
+        len(player.pieces) for player in world.players.values() if player.inert
+    )
+
+
+def _evict_inert_to_food(world: World, corpse: Player) -> None:
+    """Turn leftover corpse mass into a capped spray of ordinary pellets."""
+    total = sum(piece.mass for piece in corpse.pieces)
+    if total <= 0.0 or not corpse.pieces:
+        return
+    cx, cy = _cluster_centroid(corpse.pieces)
+    n = min(INERT_EVICT_FOOD_MAX, max(1, int(total / FOOD_MASS)))
+    for index in range(n):
+        angle = 2.0 * math.pi * index / n + world.rng.uniform(-0.2, 0.2)
+        radius = burst_nav_gap() * world.rng.uniform(0.5, 1.5)
+        world.add_food(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
+
+
+def _enforce_inert_piece_cap(world: World) -> None:
+    """Drop oldest corpses until inert piece count is at most INERT_PIECE_CAP."""
+    while _inert_piece_count(world) > INERT_PIECE_CAP:
+        corpses = [player for player in world.players.values() if player.inert]
+        if not corpses:
+            return
+        oldest = min(corpses, key=lambda player: player.last_burst_split)
+        log.info(
+            "inert cap evict name=%s pieces=%d",
+            oldest.name,
+            len(oldest.pieces),
+        )
+        _evict_inert_to_food(world, oldest)
+        world.remove_player(oldest.id)

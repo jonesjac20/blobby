@@ -722,6 +722,7 @@ def test_join_holds_food_and_sends_input_after_welcome():
         world.food["p"] = __import__("server.models", fromlist=["Food"]).Food(
             id="p", x=100, y=100
         )
+        world.food_epoch += 1
         app = create_app(world, autotick=False)
         async with TestServer(app) as server:
             async with TestClient(server) as client:
@@ -758,6 +759,7 @@ def test_game_over_does_not_join_until_respawn_delay(monkeypatch):
     async def body():
         world = World(seed=0, food_target=0)
         world.food["pellet"] = Food(id="pellet", x=10, y=10)
+        world.food_epoch += 1
         app = create_app(world, autotick=False)
         async with TestServer(app) as server:
             async with TestClient(server) as client:

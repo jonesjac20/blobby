@@ -3,7 +3,6 @@
 from dataclasses import dataclass, field
 
 from server.config import (
-    BURST_SPLIT_SECONDS,
     DEFAULT_COLOR,
     REMERGE_SECONDS,
     SPAWN_INVULN_SECONDS,
@@ -44,10 +43,11 @@ class Player:
     # True when this life came from a join with `"bot": true`. Humans never
     # send it. Bots burst at a lower mass cap than humans.
     bot: bool = False
-    # Socket-less burst corpse: cannot eat, never remerges, auto-splits.
+    # Socket-less burst corpse: cannot eat, never remerges, does not split.
     inert: bool = False
-    # Sim-time of the last inert auto-split (or of the burst that created it).
-    last_burst_split: float = -BURST_SPLIT_SECONDS
+    # Corpse birth (sim time). Eviction of oldest inert uses this. Default is
+    # expired so a staged test player is not treated as born this tick.
+    last_burst_split: float = -1.0
 
 
 @dataclass

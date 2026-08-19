@@ -81,15 +81,18 @@ async def tick_loop(
     alternative is a server whose HTTP and WebSocket endpoints still answer
     while the world silently stopped moving, which looks like a network fault
     and is far harder to diagnose than a traceback in the log. A throw partway
-    through `step` can leave the world half-mutated; for a POC that is the
-    better trade. `on_tick_ok` runs only after process_tick succeeds, so
-    /healthz can age out without treating a failed tick as a heartbeat.
+    through `step` can leave the world half-mutated. `on_tick_ok` runs only after 
+    process_tick succeeds, so /healthz can age out without treating a failed tick 
+    as a heartbeat.
     """
     interval = 1.0 / TICK_RATE
     last = clock()
     deadline = last + interval
     tick_n = 0
     hz_window = last
+    step_ms_acc = 0.0
+    emit_ms_acc = 0.0
+    pieces = 0
     while not stop.is_set():
         now = await sleep_until(deadline, clock=clock, sleep=sleep)
         if stop.is_set():
@@ -97,7 +100,9 @@ async def tick_loop(
         dt = measured_dt(now, last)
         last = now
         try:
+            step_started = clock()
             payload, deaths = process_tick(world, sessions, dt)
+            step_ms_acc += (clock() - step_started) * 1000.0
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -110,22 +115,30 @@ async def tick_loop(
 
         deadline = next_deadline(deadline, clock(), interval)
         try:
+            emit_started = clock()
             await emit(payload, deaths)
+            emit_ms_acc += (clock() - emit_started) * 1000.0
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("broadcast failed, skipping to the next tick")
 
         tick_n += 1
+        pieces = sum(len(player.pieces) for player in world.players.values())
         if tick_n % TICK_RATE == 0:
             wall = clock()
             elapsed = wall - hz_window
             hz = TICK_RATE / elapsed if elapsed > 0.0 else 0.0
             log.info(
-                "tick %d players=%d sockets=%d hz=%.1f",
+                "tick %d players=%d sockets=%d pieces=%d hz=%.1f step_ms=%.1f emit_ms=%.1f",
                 tick_n,
                 len(world.players),
                 len(sessions),
+                pieces,
                 hz,
+                step_ms_acc / TICK_RATE,
+                emit_ms_acc / TICK_RATE,
             )
             hz_window = wall
+            step_ms_acc = 0.0
+            emit_ms_acc = 0.0

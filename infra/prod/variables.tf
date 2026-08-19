@@ -5,7 +5,7 @@ variable "region" {
 }
 
 variable "instance_type" {
-  description = "Instance size. t3.small (2 GB) is required for the always-on 30-bot lobby; t3.micro OOMs."
+  description = "Instance size. t3.small (2 GB) is required for the always-on 24-bot lobby; t3.micro OOMs."
   type        = string
   default     = "t3.small"
 }

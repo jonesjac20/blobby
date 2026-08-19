@@ -42,6 +42,8 @@ class World:
         # None means "use the configured FOOD_COUNT". An explicit value lets a
         # scenario run with a sparse or empty food field.
         self.food_target = food_target
+        # Bumped when the food dict changes so FoodStream can skip a frozenset.
+        self.food_epoch: int = 0
 
     def new_id(self) -> str:
         """A 32-hex-char uuid4 drawn from the world RNG so worlds stay reproducible."""
@@ -72,19 +74,25 @@ class World:
             inert=inert,
             last_total_mass=mass,
         )
+        if inert:
+            player.last_burst_split = self.now
         self.players[player.id] = player
         return player
+
+    def add_food(self, x: float, y: float, food_id: str | None = None) -> Food:
+        food = Food(id=food_id or self.new_id(), x=x, y=y)
+        self.food[food.id] = food
+        self.food_epoch += 1
+        return food
 
     def spawn_food_to_target_count(self) -> None:
         # Resolved per call so tests can patch FOOD_COUNT after construction.
         target = FOOD_COUNT if self.food_target is None else self.food_target
         while len(self.food) < target:
-            food = Food(
-                id=self.new_id(),
-                x=self.rng.uniform(0.0, WORLD_WIDTH),
-                y=self.rng.uniform(0.0, WORLD_HEIGHT),
+            self.add_food(
+                self.rng.uniform(0.0, WORLD_WIDTH),
+                self.rng.uniform(0.0, WORLD_HEIGHT),
             )
-            self.food[food.id] = food
 
     def remove_player(self, player_id: str) -> None:
         self.players.pop(player_id, None)
