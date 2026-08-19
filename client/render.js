@@ -225,14 +225,15 @@ export function screenToWorld(camera, viewport, x, y) {
  *
  * The result therefore carries `next`'s set of pieces with blended positions.
  * A caller that needs one snapshot exactly as recorded should render it
- * directly rather than asking for alpha 0. `alpha > 1` extrapolates along the
- * last delta so a late snapshot does not freeze every other blob in place.
+ * directly rather than asking for alpha 0. Live clients clamp alpha at 1 so
+ * a late tick holds the latest snapshot instead of coasting past it.
  */
 export function interpolateStates(previous, next, alpha) {
   if (!previous || previous === next) return next;
   // alpha 0 is `previous` by definition. Returning `next` here would jump a
   // whole tick ahead every time a fresh snapshot resets alpha.
   if (alpha <= 0) return previous;
+  if (alpha >= 1) return next;
 
   const before = new Map();
   for (const player of previous.players) {

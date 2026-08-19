@@ -4,9 +4,10 @@
  * Connects on load and does not send join until Play. Food is held separately
  * and spliced onto a copy of the interpolated snapshot at draw time. Own pieces
  * are predicted from the latest snapshot and last input; everyone else is
- * interpolated over the actual gap between snapshots, not an assumed
- * 1/tickRate, so a late tick eases instead of finishing the lerp in 33ms
- * and holding. Spacebar sends split while playing; held-key auto-repeat is
+ * interpolated over at most one tickRate interval (not the measured hitch gap),
+ * then held — blending over a late gap left bots stuck on the previous
+ * snapshot, and extrapolating past the latest one drew ghost shadows.
+ * Spacebar sends split while playing; held-key auto-repeat is
  * ignored. Wheel zooms the follow-cam while playing or spectating.
  */
 
@@ -35,15 +36,12 @@ const DEADZONE_PX = 8;
 // wander from prediction / snapshot correction must not re-aim a still mouse.
 const REST_RESUME_PX = 12;
 const MAX_DT = 0.1;
-// Same ceiling as MAX_TICK_SECONDS: a hitch must not fire the predicted body
-// across the map.
-const PREDICT_MAX_DT = 0.25;
-// How far past the latest snapshot we will coast other players while waiting.
-const INTERP_EXTRAPOLATE = 1.2;
-// A gap this many ticks long is a hitch: drop leftover dead-reckon error
-// instead of drawing it as a second disc.
-const HITCH_TICKS = 2.25;
-const PREDICT_CORRECTION = 12;
+// Cap self dead-reckon to one nominal tick. Predicting out to MAX_TICK_SECONDS
+// (0.25) on a hitchy prod lobby coasted a second body ahead of the snapshot.
+const PREDICT_MAX_DT_TICKS = 1.25;
+// A gap this many ticks long is a hitch: drop leftover dead-reckon error.
+const HITCH_TICKS = 1.75;
+const PREDICT_CORRECTION = 18;
 const INPUT_EPSILON = 1e-3;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 2.5;
@@ -516,7 +514,7 @@ function reconcilePrediction(msg) {
     lastPredictedIds = ids;
     return;
   }
-  const snapDist = baseSpeed * PREDICT_MAX_DT;
+  const snapDist = baseSpeed * tickSeconds * PREDICT_MAX_DT_TICKS;
   const nextError = new Map();
   for (const piece of mine.pieces) {
     const drawn = lastPredictedPieces.get(piece.piece_id);
@@ -549,7 +547,8 @@ function predictSelf(interpolated, now, frameDt) {
     return interpolated;
   }
 
-  const predictDt = Math.min(Math.max((now - nextArrivedAt) / 1000, 0), PREDICT_MAX_DT);
+  const predictHorizon = tickSeconds * PREDICT_MAX_DT_TICKS;
+  const predictDt = Math.min(Math.max((now - nextArrivedAt) / 1000, 0), predictHorizon);
   const decay = frameDt > 0 ? Math.exp(-PREDICT_CORRECTION * frameDt) : 1;
   const knobs = speedKnobs();
   // One cluster velocity, not per-piece. Different masses otherwise drift
@@ -661,9 +660,11 @@ function tick() {
   }
 
   const elapsed = Math.max((now - nextArrivedAt) / 1000, 0);
-  const gap = Math.max((nextArrivedAt - previousArrivedAt) / 1000, tickSeconds);
-  const blendWindow = Math.min(gap, PREDICT_MAX_DT);
-  const alpha = Math.min(elapsed / blendWindow, INTERP_EXTRAPOLATE);
+  // Blend over one nominal tick, never over a hitch-sized arrival gap.
+  // Using the measured gap after a late snapshot kept alpha near 0 for
+  // hundreds of ms (bots frozen on the previous frame), then extrapolated
+  // past the new one — the shadow trail on a hitchy prod lobby.
+  const alpha = Math.min(elapsed / tickSeconds, 1);
   const interpolated = interpolateStates(previousState, nextState, alpha);
   const withFood = { ...interpolated, food: latestFood };
   const aimSource = lastDraw ? lastDraw.snapshot : withFood;
