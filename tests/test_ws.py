@@ -518,6 +518,7 @@ def test_root_serves_the_menu():
             response = await client.get("/")
             text = await response.text()
             assert response.status == 200
+            assert response.headers.get("Cache-Control") == "no-cache"
             assert "Play" in text
             assert "Spectate" in text
             assert "Game Over" in text
@@ -532,6 +533,7 @@ def test_game_client_files_are_served():
             for path in ("/index.html", "/game.js", "/render.js", "/style.css"):
                 response = await client.get(path)
                 assert response.status == 200, path
+                assert response.headers.get("Cache-Control") == "no-cache", path
 
     asyncio.run(body())
 
