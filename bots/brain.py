@@ -19,6 +19,7 @@ from server.config import (
     SPLIT_KICK_DECAY_SECONDS,
     WORLD_HEIGHT,
     WORLD_WIDTH,
+    speed_for_mass,
     split_kick_speed,
 )
 from server.simulation import radius_for_mass
@@ -29,7 +30,8 @@ VISION_EDGE_HYSTERESIS = 20.0
 APPROACHING_SPEED = 15.0
 STATE_DWELL_SECONDS = 0.4
 FLEE_MEMORY_SECONDS = 1.5
-HUNT_MEMORY_SECONDS = 2.5
+HUNT_MEMORY_SECONDS = 3.5
+HUNT_LEAD_SECONDS = 1.5
 PUNISH_REMERGE_FLOOR = 3.0
 FLEE_PANIC_RADII = 2.0
 WALL_MARGIN = 80.0
@@ -62,10 +64,10 @@ class Personality:
 # Cycle these so `--count 17` is not a clone army.
 PERSONALITIES: tuple[Personality, ...] = (
     Personality(1.0, 1.0, 1.0, 0.0),
-    Personality(1.2, 0.85, 0.0, 30.0),
+    Personality(1.2, 1.0, 0.5, 10.0),
     Personality(0.9, 1.0, 1.0, 0.0),
-    Personality(1.1, 1.0, 0.5, 15.0),
-    Personality(1.0, 1.0, 1.0, 10.0),
+    Personality(1.1, 1.0, 1.0, 5.0),
+    Personality(1.0, 1.0, 1.0, 0.0),
 )
 
 
@@ -202,6 +204,76 @@ def closing_speed(
     return -(dx * rvx + dy * rvy) / dist
 
 
+def intercept_time(
+    hx: float,
+    hy: float,
+    px: float,
+    py: float,
+    pvx: float,
+    pvy: float,
+    speed: float,
+    max_t: float,
+) -> float | None:
+    """Earliest t in [0, max_t] where a speed-`speed` hunter meets constant-vel prey.
+
+    Quadratic from |P + V t - H| = s t. None if no intercept in the window.
+    """
+    rx = px - hx
+    ry = py - hy
+    r2 = rx * rx + ry * ry
+    if r2 <= 1e-12:
+        return 0.0
+    if speed <= 0.0 or max_t <= 0.0:
+        return None
+
+    a = pvx * pvx + pvy * pvy - speed * speed
+    b = 2.0 * (rx * pvx + ry * pvy)
+    c = r2
+
+    def _valid(t: float) -> bool:
+        return math.isfinite(t) and 0.0 <= t <= max_t
+
+    if abs(a) < 1e-9:
+        if abs(b) < 1e-9:
+            return 0.0 if c <= 1e-9 else None
+        t = -c / b
+        return t if _valid(t) else None
+
+    disc = b * b - 4.0 * a * c
+    if disc < 0.0:
+        return None
+    root = math.sqrt(disc)
+    t1 = (-b - root) / (2.0 * a)
+    t2 = (-b + root) / (2.0 * a)
+    hits = [t for t in (t1, t2) if _valid(t)]
+    return min(hits) if hits else None
+
+
+def lead_point(
+    hx: float,
+    hy: float,
+    px: float,
+    py: float,
+    pvx: float,
+    pvy: float,
+    speed: float,
+    max_t: float,
+    width: float,
+    height: float,
+) -> tuple[float, float]:
+    """Aim point: true intercept, else first-order lead, clamped to the arena."""
+    t = intercept_time(hx, hy, px, py, pvx, pvy, speed, max_t)
+    if t is None:
+        dist = math.hypot(px - hx, py - hy)
+        t = 0.0 if speed <= 1e-9 else min(max_t, dist / speed)
+    ax = px + pvx * t
+    ay = py + pvy * t
+    return (
+        min(max(ax, 0.0), width),
+        min(max(ay, 0.0), height),
+    )
+
+
 def _eat_distance(mass_a: float, mass_b: float) -> float:
     """Center distance at which engulfment reads EAT_OVERLAP."""
     ra, rb = radius_for_mass(mass_a), radius_for_mass(mass_b)
@@ -246,6 +318,29 @@ def _shield_repulsion(
         away_y = cy - item["y"]
         dist = item["dist"]
         keep = radius_for_mass(item["mass"]) + radius_for_mass(our_best)
+        if dist < 1e-9:
+            dx += keep
+            continue
+        if dist < keep:
+            strength = keep - dist
+            dx += (away_x / dist) * strength
+            dy += (away_y / dist) * strength
+    return dx, dy
+
+
+def _peer_repulsion(
+    cx: float, cy: float, foreign: list[dict], our_mass: float
+) -> tuple[float, float]:
+    """Slide off overlapping peers so two grazers do not ram a shared pellet."""
+    dx = dy = 0.0
+    our_r = radius_for_mass(our_mass)
+    for item in foreign:
+        if item.get("kind") != KIND_PEER:
+            continue
+        keep = our_r + radius_for_mass(item["mass"]) + 8.0
+        dist = item["dist"]
+        away_x = cx - item["x"]
+        away_y = cy - item["y"]
         if dist < 1e-9:
             dx += keep
             continue
@@ -309,6 +404,33 @@ def _kick_displacement(parent_mass: float) -> float:
     return split_kick_speed(parent_mass) * SPLIT_KICK_DECAY_SECONDS / 2.0
 
 
+def _lunge_speed(parent_mass: float) -> float:
+    """Average kick speed plus the half-mass steering that rides with it."""
+    half = parent_mass / 2.0
+    kick = _kick_displacement(parent_mass)
+    return kick / SPLIT_KICK_DECAY_SECONDS + speed_for_mass(half)
+
+
+def _aim_lunge(
+    hitter: dict,
+    prey: dict,
+    width: float,
+    height: float,
+) -> tuple[float, float]:
+    return lead_point(
+        hitter["x"],
+        hitter["y"],
+        prey["x"],
+        prey["y"],
+        float(prey.get("vx") or 0.0),
+        float(prey.get("vy") or 0.0),
+        _lunge_speed(hitter["mass"]),
+        SPLIT_KICK_DECAY_SECONDS,
+        width,
+        height,
+    )
+
+
 def _lunge_hitter(ours: list[dict], prey: dict) -> dict | None:
     eligible = [piece for piece in ours if piece["mass"] >= MIN_SPLIT_MASS]
     if not eligible:
@@ -330,6 +452,8 @@ def split_lunge_ok(
     vision_r: float,
     cx: float,
     cy: float,
+    width: float = WORLD_WIDTH,
+    height: float = WORLD_HEIGHT,
 ) -> bool:
     del vision_r, cx, cy
     if personality.split_willingness <= 0.0 or protected:
@@ -357,7 +481,8 @@ def split_lunge_ok(
         for threat in threats:
             if threat["mass"] > half * EAT_RATIO:
                 return False
-    dist = math.hypot(hitter["x"] - prey["x"], hitter["y"] - prey["y"])
+    ax, ay = _aim_lunge(hitter, prey, width, height)
+    dist = math.hypot(hitter["x"] - ax, hitter["y"] - ay)
     need = max(0.0, dist - radius_for_mass(half))
     return need <= _kick_displacement(hitter["mass"])
 
@@ -415,26 +540,52 @@ def sacrifice_ok(
     return True
 
 
+def _pellet_claimed_by_peer(
+    pellet: tuple[float, float],
+    cx: float,
+    cy: float,
+    peers: list[dict],
+) -> bool:
+    """True if a visible peer is strictly closer to this pellet than we are."""
+    our_d2 = (pellet[0] - cx) ** 2 + (pellet[1] - cy) ** 2
+    for peer in peers:
+        pd2 = (pellet[0] - peer["x"]) ** 2 + (pellet[1] - peer["y"]) ** 2
+        if pd2 < our_d2:
+            return True
+    return False
+
+
 def _pick_graze_target(
     cx: float,
     cy: float,
     index: FoodIndex,
     memory: Memory,
+    peers: list[dict] | None = None,
 ) -> tuple[float, float] | None:
     local = index.neighborhood(cx, cy)
     if not local:
         memory.graze_target = None
         return None
+    rivals = peers or []
+    free = [
+        pellet for pellet in local if not _pellet_claimed_by_peer(pellet, cx, cy, rivals)
+    ]
+    if not free:
+        # Every local pellet sits closer to a peer. Do not ram them for it.
+        memory.graze_target = None
+        return None
     current = memory.graze_target
     if current is not None:
-        for pellet in local:
+        for pellet in free:
             if abs(pellet[0] - current[0]) < 1.0 and abs(pellet[1] - current[1]) < 1.0:
                 if math.hypot(pellet[0] - cx, pellet[1] - cy) > 1e-6:
                     return pellet
                 break
-    nearest = min(local, key=lambda pellet: (pellet[0] - cx) ** 2 + (pellet[1] - cy) ** 2)
+    nearest = min(
+        free, key=lambda pellet: (pellet[0] - cx) ** 2 + (pellet[1] - cy) ** 2
+    )
     if math.hypot(nearest[0] - cx, nearest[1] - cy) <= 1e-6:
-        others = [p for p in local if p is not nearest]
+        others = [p for p in free if p is not nearest]
         if not others:
             memory.graze_target = None
             return None
@@ -694,6 +845,8 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             vision_r=vis_r,
             cx=cx,
             cy=cy,
+            width=width,
+            height=height,
         )
         return walking or trapped or lunge
 
@@ -786,6 +939,8 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
                     vision_r=vis_r,
                     cx=cx,
                     cy=cy,
+                    width=width,
+                    height=height,
                 )
                 and personality.split_willingness > 0.0
             )
@@ -795,12 +950,30 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             if lunge:
                 hitter = _lunge_hitter(ours, hunt_target)
                 aim = hitter if hitter is not None else {"x": cx, "y": cy}
-                dx = hunt_target["x"] - aim["x"]
-                dy = hunt_target["y"] - aim["y"]
+                ax, ay = _aim_lunge(aim, hunt_target, width, height)
+                dx = ax - aim["x"]
+                dy = ay - aim["y"]
                 dx, dy = _fallback_steer(dx, dy)
             else:
-                dx = hunt_target["x"] - cx
-                dy = hunt_target["y"] - cy
+                chase_speed = (
+                    speed_for_mass(total_mass)
+                    if len(ours) > 1
+                    else speed_for_mass(ours[0]["mass"])
+                )
+                ax, ay = lead_point(
+                    cx,
+                    cy,
+                    hunt_target["x"],
+                    hunt_target["y"],
+                    float(hunt_target.get("vx") or 0.0),
+                    float(hunt_target.get("vy") or 0.0),
+                    chase_speed,
+                    HUNT_LEAD_SECONDS,
+                    width,
+                    height,
+                )
+                dx = ax - cx
+                dy = ay - cy
                 sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
                 dx += sx
                 dy += sy
@@ -810,22 +983,29 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
             dy = memory.last_prey[1] - cy
             dx, dy = _fallback_steer(dx, dy)
         else:
-            target = _pick_graze_target(cx, cy, food_index, memory)
+            peers = [item for item in foreign if item["kind"] == KIND_PEER]
+            target = _pick_graze_target(cx, cy, food_index, memory, peers)
             if target is not None:
                 dx, dy = target[0] - cx, target[1] - cy
             else:
                 dx, dy = _wander(cx, cy, width, height, vis_r, memory)
             dx, dy = _fallback_steer(dx, dy)
     elif memory.state == STATE_RECOVER:
-        target = _pick_graze_target(cx, cy, food_index, memory)
+        peers = [item for item in foreign if item["kind"] == KIND_PEER]
+        target = _pick_graze_target(cx, cy, food_index, memory, peers)
         if target is not None:
             dx, dy = target[0] - cx, target[1] - cy
         else:
             dx, dy = 0.0, 0.0
+        px, py = _peer_repulsion(cx, cy, foreign, our_best)
+        dx += px
+        dy += py
         wall_x, wall_y = _wall_repulsion(cx, cy, width, height, margin=40.0)
         dx += 0.15 * wall_x
         dy += 0.15 * wall_y
+        dx, dy = _fallback_steer(dx, dy)
     else:
+        peers = [item for item in foreign if item["kind"] == KIND_PEER]
         if protected:
             campers = [
                 item
@@ -836,17 +1016,20 @@ def decide(view: dict, memory: Memory) -> tuple[float, float, bool]:
                 nearest = min(campers, key=lambda item: item["dist"])
                 dx, dy = cx - nearest["x"], cy - nearest["y"]
             else:
-                target = _pick_graze_target(cx, cy, food_index, memory)
+                target = _pick_graze_target(cx, cy, food_index, memory, peers)
                 if target is not None:
                     dx, dy = target[0] - cx, target[1] - cy
                 else:
                     dx, dy = _wander(cx, cy, width, height, vis_r, memory)
         else:
-            target = _pick_graze_target(cx, cy, food_index, memory)
+            target = _pick_graze_target(cx, cy, food_index, memory, peers)
             if target is not None:
                 dx, dy = target[0] - cx, target[1] - cy
             else:
                 dx, dy = _wander(cx, cy, width, height, vis_r, memory)
+        px, py = _peer_repulsion(cx, cy, foreign, our_best)
+        dx += px
+        dy += py
         sx, sy = _shield_repulsion(cx, cy, foreign, our_best)
         dx += sx
         dy += sy

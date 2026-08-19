@@ -22,6 +22,8 @@ from bots.brain import (
     Personality,
     classify_piece,
     decide,
+    intercept_time,
+    lead_point,
     new_memory,
     sacrifice_ok,
     split_lunge_ok,
@@ -238,6 +240,44 @@ def test_graze_picks_a_closer_pellet_in_a_neighbor_cell_over_one_in_its_own():
     assert memory.graze_target == neighbor
     assert dx > 0.9
     assert abs(dy) < 0.2
+
+
+def test_graze_yields_a_pellet_a_peer_is_closer_to():
+    memory = new_memory(0)
+    peer = _player("p", [_piece("p", 180.0, 150.0, 50)])
+    claimed = (190.0, 150.0)
+    free = (140.0, 150.0)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 150.0, 150.0, 50)],
+            others=[peer],
+            food=[claimed, free],
+        ),
+        memory,
+    )
+    assert split is False
+    assert memory.state == STATE_GRAZE
+    assert memory.graze_target == free
+    assert dx < -0.9
+    assert abs(dy) < 0.2
+
+
+def test_graze_does_not_ram_a_peer_for_their_pellet():
+    memory = new_memory(0)
+    memory.wander_waypoint = (50.0, 200.0)
+    peer = _player("p", [_piece("p", 220.0, 200.0, 50)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[peer],
+            food=[(240.0, 200.0)],
+        ),
+        memory,
+    )
+    assert split is False
+    assert memory.state == STATE_GRAZE
+    assert memory.graze_target is None
+    assert dx < 0.0
 
 
 def test_food_index_rebuilds_once_per_version():
@@ -534,6 +574,24 @@ def test_split_lunge_each_checklist_line_can_fail():
     )
 
 
+def test_intercept_time_stationary_is_distance_over_speed():
+    t = intercept_time(0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 50.0, 10.0)
+    assert t == pytest.approx(2.0)
+    ax, ay = lead_point(0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 50.0, 10.0, 1000.0, 1000.0)
+    assert ax == pytest.approx(100.0)
+    assert ay == pytest.approx(0.0)
+
+
+def test_intercept_time_leads_a_crossing_target():
+    t = intercept_time(0.0, 0.0, 80.0, 0.0, 0.0, 40.0, 100.0, 5.0)
+    assert t is not None
+    assert t > 0.0
+    ax, ay = lead_point(0.0, 0.0, 80.0, 0.0, 0.0, 40.0, 100.0, 5.0, 1000.0, 1000.0)
+    assert ax == pytest.approx(80.0)
+    assert ay == pytest.approx(40.0 * t)
+    assert ay > 0.0
+
+
 def test_hunt_walks_until_kick_range_then_does_not_split_early():
     memory = new_memory(0)
     prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
@@ -590,6 +648,53 @@ def test_hunt_lunge_is_not_rotated_by_a_protected_meal():
     assert split is True
     assert dx > 0.9
     assert abs(dy) < 0.2
+
+
+def test_hunt_walk_leads_a_crossing_prey():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey],
+            prev_positions={"p": (280.0, 195.0)},
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=0.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.0
+    assert dy > 0.25
+
+
+def test_hunt_lunge_leads_a_moving_prey():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 210.0, 200.0, 40)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 200)],
+            others=[prey],
+            prev_positions={"p": (210.0, 197.0)},
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is True
+    assert dx > 0.5
+    assert dy > 0.25
+
+
+def test_split_lunge_waits_when_intercept_is_beyond_kick():
+    """Current disc is in kick range, but a receding intercept is not — do not fire behind them."""
+    ours = [_piece("a", 200.0, 200.0, 200)]
+    here = _piece("p", 220.0, 200.0, 40)
+    assert split_lunge_ok(**_lunge_kwargs(ours, here)) is True
+    fleeing = {**here, "vx": 150.0, "vy": 0.0}
+    assert split_lunge_ok(**_lunge_kwargs(ours, fleeing)) is False
 
 
 def test_sacrifice_checklist_and_timid_disables_it():

@@ -174,7 +174,7 @@ def test_cohesion_settles_at_the_same_overlap_across_tick_rates():
     # Kick blocks cohesion. Settle time is wall-clock after the kick ends,
     # not a fixed 5s from the split — lengthening SPLIT_KICK_DECAY_SECONDS
     # used to leave this asserting while the halves were still flying.
-    settle_after_kick = 5.0
+    settle_after_kick = 1.5
 
     for dt in TICK_RATES:
         world = World(seed=0, food_target=0)
