@@ -58,7 +58,7 @@ class Personality:
     flee_padding: float = 0.0
 
 
-# Cycle these so `--count 24` is not a clone army.
+# Cycle these so `--count 17` is not a clone army.
 PERSONALITIES: tuple[Personality, ...] = (
     Personality(1.0, 0.85, 1.0, 0.0),
     Personality(1.2, 0.7, 0.0, 30.0),

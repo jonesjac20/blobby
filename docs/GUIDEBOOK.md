@@ -23,7 +23,7 @@ The source plan is the authority on scope. Where this build adds to it, it is re
 - **Phase 1 soft-body cluster physics.** Source section 5 specifies the eat ratio and the split/remerge rules and nothing else; section 3 asks only for "run collisions". Cohesion, the merge pull, mass-weighted position projection and the three engulfment thresholds are all additions. They exist so a multi-piece player reads as one body rather than a pile of circles. Their values are *provisional*: every one is a feel parameter, and feel cannot be judged until Phase 3 puts it on a screen.
 - **Split kick scales with parent radius.** Source section 5 says only that the new piece gets a velocity kick that decays over ~0.5s. A flat speed made large splits a twitch — resting distance grows as `sqrt(mass)` while travel stayed fixed (feel-pass A2). Displacement is now `SPLIT_KICK_RADII` times the pre-split parent piece's radius, capped at `SPLIT_KICK_MAX_ARENA_FRACTION` of the shorter arena axis so a giant cannot lunge across the map. The decay window is `SPLIT_KICK_DECAY_SECONDS` (3, a feel retune of the plan's 0.5s). Only the new piece is kicked; the parent stays at half mass with its kick cleared.
 - **Bot brain exceeds source plan §7.** Section 7 is “nearest edible, flee if a larger player is closer.” That loop deadlocks, never catches a competent player, and suicide-splits. Phase 6 follows [`bot-logic.md`](bot-logic.md): four states (Graze / Hunt / Flee / Recover), limited vision, per-piece classification. The file is the spec; `bots/simple_bot.py` is still the Phase 6 implementation.
-- **Mass cap into an inert corpse.** A join with `"bot": true` (the sidecar sends this; the browser menu does not) that reaches `BOT_BURST_MASS` (55000) peels down to `BOT_BURST_REMNANT_MASS` (1000). A human life that reaches `PLAYER_BURST_MASS` (75000) peels down to `PLAYER_BURST_REMNANT_MASS` (1500). Excess becomes a socket-less `inert` player: cannot eat, never remerges, shatters once into `BURST_SHARDS` (6) uneven exploded discs, then freezes until eaten. A global `INERT_PIECE_CAP` (144) evicts the oldest corpse into at most `INERT_EVICT_FOOD_MAX` ordinary pellets. `state` carries `inert`. The client paints a pastel high-transparency wash of the parent hex, writes mass on every inert disc, and hides the remerge timer. Feel knobs, like `SPAWN_INVULN_SECONDS`.
+- **Mass cap into an inert corpse.** A join with `"bot": true` (the sidecar sends this; the browser menu does not) that reaches `BOT_BURST_MASS` (55000) peels down to `BOT_BURST_REMNANT_MASS` (1000). A human life that reaches `PLAYER_BURST_MASS` (75000) peels down to `PLAYER_BURST_REMNANT_MASS` (1500). Excess becomes a socket-less `inert` player: cannot eat, never remerges, shatters once into `BURST_SHARDS` (6) uneven exploded discs, then freezes until eaten. A global `INERT_PIECE_CAP` (102) evicts the oldest corpse into at most `INERT_EVICT_FOOD_MAX` ordinary pellets. `state` carries `inert`. The client paints a pastel high-transparency wash of the parent hex, writes mass on every inert disc, and hides the remerge timer. Feel knobs, like `SPAWN_INVULN_SECONDS`.
 - **`FOOD_MASS = 8`.** Was 5. Same `FOOD_COUNT` (1600); each pellet is more of the blob so fewer eats grow you. Radius is still `sqrt(mass / π)`.
 - **`REMERGE_SECONDS = 10`** is a pick from the source plan's "flat 10–15s" range, not a value the plan states.
 - **A simulation clock.** The source plan never says where "now" comes from. See [Simulation clock](#simulation-clock).
@@ -335,22 +335,22 @@ Goal: N Python bot clients playing autonomously.
 - [x] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
 - [x] **[Agent]** Decision loop: [`docs/bot-logic.md`](bot-logic.md). Four states (Graze / Hunt / Flee / Recover), limited vision, per-piece eat/threat classification. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the graze seed, not the product.
 - [x] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world. Smoke only — not the load bar.
-- [x] **[Agent]** Run `python -m bots.simple_bot --count 24` against a local server. Confirm the tick loop still holds ~30Hz with that many players in the world (tick count vs wall-clock over ~30s, not a short burst). Server log lines `tick N players=P sockets=S pieces=K hz=H step_ms=S emit_ms=E`. Measured 2026-08-17: 30 sockets, ~30s, hz 29.5–30.3 (pre-shatter; lobby is now 24). Deployed hosts spawn that table themselves: Compose `bots` sidecar on production, Fargate `bots` sidecar on each PR preview (`--count 24`). Do not run this by hand against those URLs unless you want extras.
+- [x] **[Agent]** Run `python -m bots.simple_bot --count 17` against a local server. Confirm the tick loop still holds ~30Hz with that many players in the world (tick count vs wall-clock over ~30s, not a short burst). Server log lines `tick N players=P sockets=S pieces=K hz=H step_ms=S emit_ms=E`. Measured 2026-08-17: 30 sockets, ~30s, hz 29.5–30.3 (pre-shatter; lobby is now 17). Deployed hosts spawn that table themselves: Compose `bots` sidecar on production, Fargate `bots` sidecar on each PR preview (`--count 17`). Do not run this by hand against those URLs unless you want extras.
 - [ ] **[Human]** Play against them in a browser tab. Confirm bots don't deadlock, don't spin in place, and don't crash on player disconnect.
 
 ### How to verify (Phase 6)
 
 ```
 python -m server.main
-python -m bots.simple_bot --count 24
+python -m bots.simple_bot --count 17
 ```
 
-Open `http://localhost:8000`, Play. Watch the server log for `hz=` near 30 with `players=24`. Ctrl+C on the bot process exits 0.
+Open `http://localhost:8000`, Play. Watch the server log for `hz=` near 30 with `players=17`. Ctrl+C on the bot process exits 0.
 
 ### Phase 6 exit criteria
 
 - [ ] **[Human]** World feels alive with bots present. Bots survive server restarts (the client reconnects, or its process exits cleanly).
-- [ ] **[Human]** Stress test: join as a **freshly spawning** player into a lobby with **≥24 bots**. The world feels alive (bots moving, eating, hunting around you). Your own movement, eating, and the spawn-invuln window stay responsive — not hitching, not a frozen or empty-feeling map.
+- [ ] **[Human]** Stress test: join as a **freshly spawning** player into a lobby with **≥17 bots**. The world feels alive (bots moving, eating, hunting around you). Your own movement, eating, and the spawn-invuln window stay responsive — not hitching, not a frozen or empty-feeling map.
 
 ---
 

@@ -105,7 +105,7 @@ jobs:
             echo ""
             echo "This task's public IP is \`$IP\`. A new push replaces the task and the IP."
             echo ""
-            echo "24 bots join on boot (sidecar). Spectate to see a populated lobby."
+            echo "17 bots join on boot (sidecar). Spectate to see a populated lobby."
           } >> "$GITHUB_STEP_SUMMARY"
           for i in $(seq 1 30); do
             if curl -fsS --max-time 3 "$URL/healthz"; then
@@ -134,7 +134,7 @@ jobs:
               '',
               `This task's public IP is \`${ip}\`. Ignore older IPs; each push can change it.`,
               '',
-              '24 bots join on boot. Spectate for a populated lobby without running simple_bot.',
+              '17 bots join on boot. Spectate for a populated lobby without running simple_bot.',
               '',
               'Production is the Elastic IP / domain. This URL dies when the PR closes.',
             ].join('\n');
