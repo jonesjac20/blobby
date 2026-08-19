@@ -89,6 +89,26 @@
       ]
     },
     {
+      "Sid": "EcsServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": "ecs.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "EcsServiceLinkedRoleRead",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:DeleteServiceLinkedRole"
+      ],
+      "Resource": "arn:aws:iam::*:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS"
+    },
+    {
       "Sid": "PreviewEcsExecutionManagedPolicy",
       "Effect": "Allow",
       "Action": [

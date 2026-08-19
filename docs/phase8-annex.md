@@ -241,8 +241,7 @@ After a green apply, you should see **all** of these, and no new machine:
 `blobby-preview-gha` trust relationships must include:
 
 - `aud` = `sts.amazonaws.com`
-- `sub` = `repo:jonesjac20/blobby:pull_request` (PR jobs do **not** use `ref:refs/heads/...`)
-- `job_workflow_ref` starts with `jonesjac20/blobby/.github/workflows/preview.yml`
+- `sub` like `repo:jonesjac20/blobby:pull_request` (and the immutable `repo:jonesjac20@*/blobby@*:pull_request` form). PR jobs do **not** use `ref:refs/heads/...`.
 
 That role must **not** allow `ec2:TerminateInstances` / `ec2:StopInstances` / `ec2:RunInstances`.
 
@@ -265,12 +264,12 @@ Region is hardcoded `us-east-1` in the workflow; no variable for that.
 
 #### F. If it fails
 
-- **`Could not assume role` / `Not authorized to perform sts:AssumeRoleWithWebIdentity`:** GitHub variables wrong, or trust policy missing `pull_request` / `job_workflow_ref`. Re-check C and D. Workflow permission `id-token: write` is in the YAML; you do not toggle that in the UI.
+- **`Could not assume role` / `Not authorized to perform sts:AssumeRoleWithWebIdentity`:** This is the role **trust policy** (who may assume `blobby-preview-gha`), not a missing ECS/S3 action. Confirm GitHub Variable `PREVIEW_ROLE_ARN` is `arn:aws:iam::<ACCOUNT_ID>:role/blobby-preview-gha`. The role must allow `aud=sts.amazonaws.com` and `sub` `repo:jonesjac20/blobby:pull_request` (or the immutable `repo:jonesjac20@*/blobby@*:pull_request` form). Do not require `job_workflow_ref` — that claim is for reusable workflows and is often missing, which makes STS deny the assume. After changing `infra/preview/foundation`, `terraform apply` there again (updates the role in place). Workflow permission `id-token: write` is in the YAML; you do not toggle that in the UI.
 - **`EntityAlreadyExists` OIDC:** step B import.
 - **`CannotPullContainerError`:** GHCR not public, or image tag `pr-<n>-<sha>` missing (build job failed before push).
 - **`/healthz` never 200:** ECS task stopped. CloudWatch `/ecs/blobby-preview` for the Python traceback. SG must allow 8000 from `0.0.0.0/0` (GitHub-hosted curl comes from the internet).
 - **Job ran on `blobby-prod`:** `preview.yml` `runs-on` is wrong; stop and fix — that runner is production.
-- **No VPC / subnet data source:** prod Terraform was never applied, or tags `Name=blobby-prod` changed.
+- **`Unable to assume the service linked role` on `aws_ecs_service`:** the account has never used ECS, so `AWSServiceRoleForECS` is missing. GitHub cannot create it. On the tower: update managed policy `blobby-preview-foundation` from `iam-policy.json`, then `cd infra/preview/foundation && terraform apply`. Fast path: `aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com` then, if Terraform did not create it, `terraform import aws_iam_service_linked_role.ecs ecs.amazonaws.com`. Re-run the Preview job.
 - **`s3:GetBucketCORS` / `AccessDenied` on the state bucket during `terraform apply`:** the AWS provider reads extra bucket attributes after create. Update the managed policy `blobby-preview-foundation` from [`iam-policy.json`](../infra/preview/foundation/iam-policy.json) (use **s3:*** on that bucket only, not an inline policy), then `terraform apply` again. If the bucket already exists in S3 but not in state: `terraform import aws_s3_bucket.state blobby-preview-tfstate-<ACCOUNT_ID>` then apply.
 
 #### G. Cost and teardown
@@ -293,7 +292,7 @@ To remove preview **foundation** later (optional): close all preview PRs first, 
 - **Preview Terraform state lives in S3.** GitHub-hosted runners discard their disk when the job ends, so a local `terraform.tfstate` (or workspace) cannot survive from `synchronize` to `closed`. One object per PR: `preview/pr-<n>/terraform.tfstate`. This is not a reason to add a self-hosted runner.
 - **Preview image tag is `pr-<n>-<sha>`, not a mutable `pr-N` alone.** Re-pushing the same tag does not change the task-definition `image`, so ECS would keep the old task. `force_new_deployment = true` and `deployment_minimum_healthy_percent = 0`.
 - **Preview is a separate workflow; `ci.yml` is unchanged.** `ci.yml` is test-always plus build+deploy on `main` only. Its `cancel-in-progress: true` would interrupt `terraform apply`. Preview re-runs pytest/ruff itself.
-- **Preview OIDC `sub` is `repo:OWNER/REPO:pull_request`.** PR jobs do not present `ref:refs/heads/...`. Trust is also limited to `job_workflow_ref` of `preview.yml`.
+- **Preview OIDC `sub` is `repo:OWNER/REPO:pull_request` (or the immutable `OWNER@id/REPO@id` form).** PR jobs do not present `ref:refs/heads/...`. Do not require `job_workflow_ref` on a non-reusable workflow; a missing claim fails the whole trust statement.
 - **Preview smokes `/healthz`, not `/`.** Phase 10 already landed the route.
 
 ---

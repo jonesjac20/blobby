@@ -53,6 +53,12 @@ resource "aws_ecs_cluster" "preview" {
   }
 }
 
+# First ECS CreateService in an account needs this. GitHub's role cannot
+# create it, so foundation (laptop user) does it once.
+resource "aws_iam_service_linked_role" "ecs" {
+  aws_service_name = "ecs.amazonaws.com"
+}
+
 resource "aws_cloudwatch_log_group" "preview" {
   name              = "/ecs/${var.name}"
   retention_in_days = 7
@@ -116,16 +122,17 @@ data "aws_iam_policy_document" "gha_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:pull_request"]
-    }
-
+    # pull_request jobs use sub "...:pull_request", not ref:refs/heads/...
+    # Repos created after 2026-07-15 (or opted in) use immutable IDs in sub.
+    # Do not require job_workflow_ref: that claim is for reusable workflows
+    # and is often absent, which makes IAM deny AssumeRoleWithWebIdentity.
     condition {
       test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:job_workflow_ref"
-      values   = ["${var.github_repository}/.github/workflows/preview.yml@*"]
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        "repo:${var.github_repository}:pull_request",
+        "repo:${split("/", var.github_repository)[0]}@*/${split("/", var.github_repository)[1]}@*:pull_request",
+      ]
     }
   }
 }
@@ -160,11 +167,7 @@ data "aws_iam_policy_document" "gha" {
   statement {
     sid = "LookupNetworkAndLogs"
     actions = [
-      "ec2:DescribeVpcs",
-      "ec2:DescribeSubnets",
-      "ec2:DescribeSecurityGroups",
-      "ec2:DescribeNetworkInterfaces",
-      "ec2:DescribeAvailabilityZones",
+      "ec2:Describe*",
       "logs:DescribeLogGroups",
       "logs:ListTagsForResource",
     ]

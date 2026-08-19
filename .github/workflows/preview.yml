@@ -42,6 +42,11 @@ jobs:
     if: github.event.action != 'closed'
     needs: test
     runs-on: ubuntu-latest
+    env:
+      # vars.* is null if the name is wrong, it was created as a Secret,
+      # or it lives on an Environment this job does not use. Fallback is
+      # the foundation bucket: blobby-preview-tfstate-<account-id>.
+      PREVIEW_TF_STATE_BUCKET: ${{ vars.PREVIEW_TF_STATE_BUCKET || 'blobby-preview-tfstate-423623831361' }}
     defaults:
       run:
         working-directory: infra/preview/service
@@ -69,8 +74,9 @@ jobs:
           terraform_wrapper: false
       - name: Terraform apply
         run: |
+          echo "tfstate bucket: ${PREVIEW_TF_STATE_BUCKET}"
           terraform init -input=false \
-            -backend-config="bucket=${{ vars.PREVIEW_TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${PREVIEW_TF_STATE_BUCKET}" \
             -backend-config="key=preview/pr-${{ github.event.number }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
           terraform apply -input=false -auto-approve \
@@ -131,6 +137,8 @@ jobs:
   teardown:
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
+    env:
+      PREVIEW_TF_STATE_BUCKET: ${{ vars.PREVIEW_TF_STATE_BUCKET || 'blobby-preview-tfstate-423623831361' }}
     defaults:
       run:
         working-directory: infra/preview/service
@@ -147,7 +155,7 @@ jobs:
       - name: Terraform destroy
         run: |
           terraform init -input=false \
-            -backend-config="bucket=${{ vars.PREVIEW_TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${PREVIEW_TF_STATE_BUCKET}" \
             -backend-config="key=preview/pr-${{ github.event.number }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
           terraform destroy -input=false -auto-approve \
