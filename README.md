@@ -2,7 +2,7 @@
 
 An agar.io-style multiplayer game. Authoritative Python server, browser + Python-bot clients, WebSocket/JSON protocol.
 
-**Play:** [http://34.195.201.37:8000](http://34.195.201.37:8000) (name, color, Play / Spectate). Bots: `python -m bots.simple_bot --url http://34.195.201.37:8000/ws --count 5`.
+**Play:** [http://34.195.201.37:8000](http://34.195.201.37:8000) (name, color, Play / Spectate). Production and PR previews already run 30 bots as a sidecar. Extra local bots: `python -m bots.simple_bot --url http://34.195.201.37:8000/ws --count 5`.
 
 Locally, the same client is `http://localhost:8000`. Everything the project intends to do, along with a phased checklist and where things currently stand, lives in [docs/GUIDEBOOK.md](docs/GUIDEBOOK.md).
 

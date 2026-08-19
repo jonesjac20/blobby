@@ -40,8 +40,8 @@ Goal: every push is tested and linted before anything gets packaged.
 
 Goal: the server becomes a deployable image, not a folder you rsync.
 
-- [x] **[Agent]** Write `../Dockerfile`: `python:3.13-slim` base, copy and `pip install -r requirements.txt` only (runtime pin, not the dev requirements — this mirrors the split `GUIDEBOOK.md` already documents), copy `server/` and the whitelisted `client/` files, `EXPOSE 8000`, `CMD ["python", "-m", "server.main"]`.
-- [x] **[Agent]** Write `../docker-compose.yml` for the game host: one `game` service from the built image, `8000:8000`, `restart: unless-stopped`.
+- [x] **[Agent]** Write `../Dockerfile`: `python:3.13-slim` base, copy and `pip install -r requirements.txt` only (runtime pin, not the dev requirements — this mirrors the split `GUIDEBOOK.md` already documents), copy `server/`, `bots/`, and the whitelisted `client/` files, `EXPOSE 8000`, `CMD ["python", "-m", "server.main"]`. Bots are in the image so a sidecar can run them; they are not started by this CMD.
+- [x] **[Agent]** Write `../docker-compose.yml` for the game host: `game` from the built image, `8000:8000`, plus a `bots` sidecar (`python -m bots.simple_bot --url http://game:8000/ws --count 30`), both `restart: unless-stopped`. No host port for bots.
 - [x] **[Agent]** Extend the workflow (or add `.github/workflows/build.yml`) so that on push to `main`, after tests pass, it builds the image and pushes to GHCR tagged with the git SHA and `latest`.
 - [x] **[Human]** Set GHCR package visibility, or give the game host a token scoped to pull it. After the first successful `build` job on `main`: repo → Packages → `blobby` → Package settings → Change visibility. Public is the simple POC path. Private needs a `read:packages` PAT on the host in a `.env` that stays out of git.
 - [x] **[Both]** Verify: `docker build`, `docker run -p 8000:8000 <image>` locally, confirm a browser tab can join exactly as it did in Phase 3/4 bare-metal.
@@ -75,13 +75,14 @@ Do not register a production runner on the home VirtualBox VM. That box is not t
 
 Goal: the production host is a Terraform-managed EC2 with a public IP. `terraform destroy` then `apply` brings the game — pipeline included — back. [`scripts/vm_bootstrap.sh`](../scripts/vm_bootstrap.sh) remains how Phase 7's home box was stood up; it is not the production rebuild path.
 
-Sketch: default VPC (or one public subnet), security group (`8000/tcp` now; `443` if Caddy/nginx is in compose), Ubuntu `t3.micro`-class, Elastic IP, `user_data` that installs Docker + the compose plugin. No autoscaling, no ALB, no API Gateway. Same [`docker-compose.yml`](../docker-compose.yml) as Phase 9: `ghcr.io/jonesjac20/blobby:latest`.
+Sketch: default VPC (or one public subnet), security group (`8000/tcp` now; `443` if Caddy/nginx is in compose), Ubuntu `t3.small` (2 GB — the always-on 30-bot lobby does not fit `t3.micro`'s 1 GB), Elastic IP, `user_data` that installs Docker + the compose plugin. No autoscaling, no ALB, no API Gateway. Same [`docker-compose.yml`](../docker-compose.yml) as Phase 9: `ghcr.io/jonesjac20/blobby:latest` for `game` and the `bots` sidecar. **Human:** if the instance is still `t3.micro`, set `instance_type = "t3.small"` in `terraform.tfvars` and `terraform apply` **before or with** the first bot deploy. If `tick … hz=` sits well below 30 for minutes after that, bump to `t3.medium`.
 
 Public URL: Elastic IP first, then a domain A record (Route 53 or Cloudflare). TLS is Caddy/nginx on the instance or Cloudflare in front — not ACM+ALB, not TLS inside `server/main.py`. Mixed content is why TLS belongs with the domain: an `https://` page will open `wss://`.
 
 - [ ] **[Human]** AWS account. IAM (or keys) so Terraform can create EC2, EIP, security groups, and an instance profile if you want SSM later.
 - [x] **[Agent]** Add `infra/prod/` Terraform for the sketch above. Output the public IP. `user_data` must not register a GitHub runner — that token is Human, Phase 10.
 - [ ] **[Human]** `terraform apply`, confirm the Elastic IP answers. First bring-up may be a manual `docker compose up -d` on the box so you can play a round off-LAN before CD exists.
+- [ ] **[Human]** Production size is `t3.small` (2 GB) for the 30-bot lobby. If the instance is still `t3.micro`, set `instance_type = "t3.small"` in `terraform.tfvars` and `terraform apply` **before or with** the first bot sidecar deploy. If `tick … hz=` sits well below 30 for minutes, bump to `t3.medium`.
 - [ ] **[Human]** Point a domain A record at the Elastic IP. Terminate TLS with Caddy/nginx on the instance or Cloudflare in front. Confirm a browser at `https://<domain>` loads the game and the WebSocket connects (`wss`).
 - [ ] **[Both]** Verify: `terraform destroy`, then `apply`, re-register the Phase 10 runner with `--labels blobby-prod` if the instance was replaced, push to `main`, confirm deploy succeeds on the new box.
 
@@ -129,7 +130,7 @@ Why this does not collide with Phase 10: three couplings would actually share a 
 
 On PR close: `terraform destroy` for that PR's S3 state key (`preview/pr-<n>/terraform.tfstate`). Merge to `main` still only deploys via Phase 10. Closing a PR must not touch the EC2, and destroy never SSHs to it.
 
-Native `/ws` still works on the task — one container, port 8000, same origin. No API Gateway. No ALB. Task `assign_public_ip = ENABLED` in the **existing prod public subnet**, security group `blobby-preview` (`8000/tcp`). Same VPC as the EC2, different compute.
+Native `/ws` still works on the task — `game` on port 8000, same origin, plus a non-essential `bots` sidecar on localhost `/ws` (`--count 30`). No API Gateway. No ALB. Task `assign_public_ip = ENABLED` in the **existing prod public subnet**, security group `blobby-preview` (`8000/tcp`). Same VPC as the EC2, different compute. Task size is **1 vCPU / 2 GB** so 30 bots + game can hold 30Hz.
 
 GHCR is public, so Fargate can pull without ECR or a PAT. Do not reuse the production host's GHCR token as a Fargate secret.
 
@@ -138,8 +139,8 @@ The preview smoke curl uses `/healthz` (already on the image from Phase 10).
 Preview is a separate workflow ([`preview.yml`](../.github/workflows/preview.yml)). Do not add it to [`ci.yml`](../.github/workflows/ci.yml): that file's `cancel-in-progress: true` would interrupt `terraform apply`, and `ci.yml` is the main test/build/deploy orchestrator, not a preview host.
 
 - [x] **[Agent]** Add [`infra/preview/foundation/`](../infra/preview/foundation/): look up the existing `blobby-prod` VPC and public subnet (no second VPC). Create ECS cluster `blobby-preview`, SG `blobby-preview` in that VPC, CloudWatch log group, task execution role, S3 state bucket, GitHub OIDC provider + role `blobby-preview-gha`. Laptop IAM extras in `iam-policy.json`.
-- [x] **[Agent]** Add [`infra/preview/service/`](../infra/preview/service/): per-PR Fargate task + service (0.25 vCPU / 0.5 GB), `assign_public_ip`, unique `image` tag, S3 backend key `preview/pr-<n>/terraform.tfstate`. No EC2 resources.
-- [x] **[Agent]** Add [`.github/workflows/preview.yml`](../.github/workflows/preview.yml) on `pull_request` (`opened` / `synchronize` / `reopened`): pytest/ruff, build and push `pr-${{ github.event.number }}-${{ github.sha }}` **without** tagging `latest`, `terraform apply`, wait for the task RUNNING, curl `/healthz`, comment the URL. `runs-on: ubuntu-latest`. AWS auth via OIDC.
+- [x] **[Agent]** Add [`infra/preview/service/`](../infra/preview/service/): per-PR Fargate task + service (1 vCPU / 2 GB, `game` + `bots` sidecar), `assign_public_ip`, unique `image` tag, S3 backend key `preview/pr-<n>/terraform.tfstate`. No EC2 resources.
+- [x] **[Agent]** Add [`.github/workflows/preview.yml`](../.github/workflows/preview.yml) on `pull_request` (`opened` / `synchronize` / `reopened`): pytest/ruff, build and push `pr-${{ github.event.number }}-${{ github.sha }}` **without** tagging `latest`, `terraform apply`, wait for the task RUNNING, curl `/healthz`, comment the URL and that 30 bots join on boot. `runs-on: ubuntu-latest`. AWS auth via OIDC.
 - [x] **[Agent]** Same workflow on `pull_request` `closed`: `terraform destroy` for that PR's state. Does not SSH to the EC2 and does not run `deploy.yml`.
 - [ ] **[Human]** Follow the [Human runbook](#phase-14-human-runbook) below (IAM, `terraform apply` foundation, GitHub variables, first PR). Confirm GHCR stays public.
 
@@ -257,8 +258,8 @@ Region is hardcoded `us-east-1` in the workflow; no variable for that.
 
 - [ ] **[Both]** Branch, change a visible string, open a PR. Do not merge yet.
 - [ ] **[Human]** **Actions**: workflow **Preview** runs on `ubuntu-latest`. It must **not** say `self-hosted` / `blobby-prod`.
-- [ ] **[Human]** When the job comments a URL: open it, play a round. That host is the Fargate task's public IP, **not** the Elastic IP.
-- [ ] **[Human]** AWS **ECS** → cluster `blobby-preview` → service `blobby-pr-<n>` → one task. **Launch type: Fargate**. Task public IP matches the comment. Network: prod VPC / prod public subnet / SG `blobby-preview`.
+- [ ] **[Human]** When the job comments a URL: open it, spectate or play a round. Expect ~30 bots (`bot`, `bot2`…) already in the lobby. That host is the Fargate task's public IP, **not** the Elastic IP.
+- [ ] **[Human]** AWS **ECS** → cluster `blobby-preview` → service `blobby-pr-<n>` → one task. **Launch type: Fargate**. Two containers (`game` + `bots`). Task public IP matches the comment. Network: prod VPC / prod public subnet / SG `blobby-preview`. 1 vCPU / 2 GB.
 - [ ] **[Human]** Load production (`http://<elastic-ip>:8000`). It must still be `main` (old string). **EC2 instance count unchanged.**
 - [ ] **[Human]** Close (or merge) the PR. Actions runs teardown. ECS service/task gone. Prod URL unchanged.
 
@@ -274,7 +275,7 @@ Region is hardcoded `us-east-1` in the workflow; no variable for that.
 
 #### G. Cost and teardown
 
-You pay for Fargate (0.25 vCPU / 0.5 GB) and a public IPv4 **while a PR is open**. Close PRs you are not using. Foundation (cluster, SG, empty log group, S3) is nearly free idle; the ECS cluster itself has no hourly charge.
+You pay for Fargate (1 vCPU / 2 GB) and a public IPv4 **while a PR is open**. Close PRs you are not using. Foundation (cluster, SG, empty log group, S3) is nearly free idle; the ECS cluster itself has no hourly charge.
 
 To remove preview **foundation** later (optional): close all preview PRs first, then `cd infra/preview/foundation && terraform destroy`. That must not delete the prod VPC/EC2. Never destroy `infra/prod` to "clean up previews."
 
@@ -294,6 +295,7 @@ To remove preview **foundation** later (optional): close all preview PRs first, 
 - **Preview is a separate workflow; `ci.yml` is unchanged.** `ci.yml` is test-always plus build+deploy on `main` only. Its `cancel-in-progress: true` would interrupt `terraform apply`. Preview re-runs pytest/ruff itself.
 - **Preview OIDC `sub` is `repo:OWNER/REPO:pull_request` (or the immutable `OWNER@id/REPO@id` form).** PR jobs do not present `ref:refs/heads/...`. Do not require `job_workflow_ref` on a non-reusable workflow; a missing claim fails the whole trust statement.
 - **Preview smokes `/healthz`, not `/`.** Phase 10 already landed the route.
+- **Always-on 30-bot lobby is a sidecar, not in-process.** `python -m bots.simple_bot --count 30` talks `/ws` like a human. Compose (`http://game:8000/ws`) and preview Fargate (`http://127.0.0.1:8000/ws`, `essential = false`, restart loop) share the same image; `server.main` does not spawn them. Production needs `t3.small` (2 GB); preview needs 1 vCPU / 2 GB. `t3.micro` / 0.25 vCPU / 0.5 GB was the game-only size. `.dockerignore` must not exclude `bots/` or `COPY bots/` is empty.
 
 ---
 

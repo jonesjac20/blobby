@@ -15,4 +15,6 @@ python -m bots.simple_bot --count 30
 
 One process, N sockets. Names are `bot`, `bot2`, `bot3`… Colors are random per client unless `--color` pins the first (or the only) one. On death the bot waits 3s and `join`s again with the same name and color. On disconnect it reconnects with 0.5s→8s backoff. Ctrl+C closes sockets and exits 0.
 
+Production Compose and PR-preview Fargate start the same client as a sidecar (`--count 30`) so those lobbies are populated without running this by hand. Local servers still need the command above.
+
 All bots in the process share one 100×100 graze food index, rebuilt when the food version changes.

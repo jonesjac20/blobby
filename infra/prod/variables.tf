@@ -5,9 +5,9 @@ variable "region" {
 }
 
 variable "instance_type" {
-  description = "Instance size. t3.micro is the annex sketch."
+  description = "Instance size. t3.small (2 GB) is required for the always-on 30-bot lobby; t3.micro OOMs."
   type        = string
-  default     = "t3.micro"
+  default     = "t3.small"
 }
 
 variable "key_name" {

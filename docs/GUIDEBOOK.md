@@ -333,7 +333,7 @@ Goal: N Python bot clients playing autonomously.
 - [x] **[Agent]** `bots/simple_bot.py` — WebSocket client using the same `join`/`input`/`split` protocol. CLI args for name, server URL, count. On disconnect it either reconnects or exits cleanly, per the exit criterion below.
 - [x] **[Agent]** Decision loop: [`docs/bot-logic.md`](bot-logic.md). Four states (Graze / Hunt / Flee / Recover), limited vision, per-piece eat/threat classification. No pathfinding. `input_toward_nearest_food` in `server/demo.py` is the graze seed, not the product.
 - [x] **[Agent]** Run 3–5 bots against a local server and confirm the tick loop still holds its rate with that many players in the world. Smoke only — not the load bar.
-- [x] **[Agent]** Run `python -m bots.simple_bot --count 30` against a local server. Confirm the tick loop still holds ~30Hz with that many players in the world (tick count vs wall-clock over ~30s, not a short burst). Server log lines `tick N players=P sockets=S hz=H`. Measured 2026-08-17: 30 sockets, ~30s, hz 29.5–30.3.
+- [x] **[Agent]** Run `python -m bots.simple_bot --count 30` against a local server. Confirm the tick loop still holds ~30Hz with that many players in the world (tick count vs wall-clock over ~30s, not a short burst). Server log lines `tick N players=P sockets=S hz=H`. Measured 2026-08-17: 30 sockets, ~30s, hz 29.5–30.3. Deployed hosts spawn that table themselves: Compose `bots` sidecar on production, Fargate `bots` sidecar on each PR preview (`--count 30`). Do not run this by hand against those URLs unless you want extras.
 - [ ] **[Human]** Play against them in a browser tab. Confirm bots don't deadlock, don't spin in place, and don't crash on player disconnect.
 
 ### How to verify (Phase 6)

@@ -37,8 +37,8 @@ resource "aws_ecs_task_definition" "preview" {
   family                   = local.family
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = "256"
-  memory                   = "512"
+  cpu                      = "1024"
+  memory                   = "2048"
   execution_role_arn       = data.aws_iam_role.execution.arn
 
   runtime_platform {
@@ -64,6 +64,30 @@ resource "aws_ecs_task_definition" "preview" {
           "awslogs-group"         = data.aws_cloudwatch_log_group.preview.name
           "awslogs-region"        = var.region
           "awslogs-stream-prefix" = "pr-${var.pr_number}"
+        }
+      }
+    },
+    {
+      name      = "bots"
+      image     = var.image
+      essential = false
+      dependsOn = [
+        {
+          containerName = "game"
+          condition     = "START"
+        }
+      ]
+      command = [
+        "sh",
+        "-c",
+        "while true; do python -m bots.simple_bot --url http://127.0.0.1:8000/ws --name bot --count 30; sleep 2; done"
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = data.aws_cloudwatch_log_group.preview.name
+          "awslogs-region"        = var.region
+          "awslogs-stream-prefix" = "pr-${var.pr_number}-bots"
         }
       }
     }
