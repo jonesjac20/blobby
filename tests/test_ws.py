@@ -667,7 +667,13 @@ def test_eating_a_pellet_resends_food():
 
         assert first["type"] == "food"
         assert first["food"] == [[500, 500]]
-        assert resent == {"type": "food", "version": 2, "food": []}
+        assert resent == {
+            "type": "food",
+            "version": 2,
+            "add": [],
+            "remove": [[500, 500]],
+        }
+        assert "food" not in resent
         assert world.food == {}
 
     asyncio.run(body())

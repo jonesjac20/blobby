@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -58,36 +59,80 @@ class ClientSession:
     food_version: int = 0
 
 
+def _food_pairs(world: World) -> list[list[int]]:
+    return [[round(f.x), round(f.y)] for f in world.food.values()]
+
+
+def _pairs_from_counter(counts: Counter[tuple[int, int]]) -> list[list[int]]:
+    pairs: list[list[int]] = []
+    for (x, y), n in counts.items():
+        pairs.extend([x, y] for _ in range(n))
+    return pairs
+
+
+def _food_delta(
+    previous: Sequence[Sequence[int]], current: Sequence[Sequence[int]]
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Add/remove integer pairs, preserving multiplicity of identical pixels."""
+    before = Counter((int(x), int(y)) for x, y in previous)
+    after = Counter((int(x), int(y)) for x, y in current)
+    return _pairs_from_counter(after - before), _pairs_from_counter(before - after)
+
+
 class FoodStream:
-    """Change-gated food broadcast. One shared payload, a version per socket.
+    """Change-gated food broadcast. Full snapshot plus a one-step delta.
 
     Pellets have no velocity, so `World.food_epoch` catches every change
     without allocating a frozenset of ids each tick. The payload is bare
     `[x, y]` integer pairs — food has no radius in the simulation, so a
     half-unit shift is sub-pixel at play zoom, and dropping the 32-hex ids is
-    what makes the message small enough to send at all. `encoded` is that
-    payload dumped once; `_emit` sends the string to every behind socket
-    rather than `json.dumps` per socket. A later per-pellet delta is a
-    drop-in on this same message type.
+    what makes the message small enough to send at all. `encoded` is the full
+    field dumped once; `encoded_delta` is the add/remove against the previous
+    field. `_emit` sends the full string to a socket at version 0 or more than
+    one version behind, and the delta when the socket is exactly one behind.
     """
 
     def __init__(self) -> None:
         self.version = 0
         self._epoch = 0
+        self._pairs: list[list[int]] = []
         self.payload: dict = {"type": "food", "version": 0, "food": []}
         self.encoded: str = encode_json(self.payload)
+        self.delta_payload: dict = {
+            "type": "food",
+            "version": 0,
+            "add": [],
+            "remove": [],
+        }
+        self.encoded_delta: str = encode_json(self.delta_payload)
 
     def refresh(self, world: World) -> None:
         if world.food_epoch == self._epoch:
             return
         self._epoch = world.food_epoch
+        pairs = _food_pairs(world)
+        add, remove = _food_delta(self._pairs, pairs)
         self.version += 1
+        self._pairs = pairs
         self.payload = {
             "type": "food",
             "version": self.version,
-            "food": [[round(f.x), round(f.y)] for f in world.food.values()],
+            "food": pairs,
         }
         self.encoded = encode_json(self.payload)
+        self.delta_payload = {
+            "type": "food",
+            "version": self.version,
+            "add": add,
+            "remove": remove,
+        }
+        self.encoded_delta = encode_json(self.delta_payload)
+
+    def encoded_for(self, food_version: int) -> str:
+        """Full snapshot unless this socket is exactly one version behind."""
+        if food_version == 0 or self.version - food_version != 1:
+            return self.encoded
+        return self.encoded_delta
 
 
 def normalize_name(value: object) -> str:

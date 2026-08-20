@@ -289,6 +289,24 @@ def test_food_index_rebuilds_once_per_version():
     assert index.rebuilds == 2
 
 
+def test_food_index_apply_delta_skips_rebuild():
+    index = FoodIndex()
+    index.update(1, [[10, 10], [120, 10]])
+    assert index.rebuilds == 1
+    index.apply_delta(2, add=[[30, 10]], remove=[[10, 10]])
+    assert index.rebuilds == 1
+    assert index.version == 2
+    assert (30.0, 10.0) in index.pellets
+    assert (10.0, 10.0) not in index.pellets
+    near = index.neighborhood(30.0, 10.0)
+    assert (30.0, 10.0) in near
+    assert (10.0, 10.0) not in near
+    far = index.neighborhood(120.0, 10.0)
+    assert (120.0, 10.0) in far
+    index.apply_delta(2, add=[[99, 99]], remove=[])
+    assert (99.0, 99.0) not in index.pellets
+
+
 # --- vision / flee memory -------------------------------------------------
 
 
