@@ -45,7 +45,7 @@ For each foreign piece:
 - **Threat** if `piece.mass > our_weakest_piece.mass * EAT_RATIO` and the owner is not inert.
 - **Peer** otherwise.
 
-`inert` rides `state` next to `protected`. Spawn-protected is not prey; inert is never a threat. A catchable inert piece is a **free meal**: Hunt it on sight (no closing-speed or remelt wait — a corpse does not flee or fuse) and prefer it over Graze pellets. Do not split-lunge into it.
+`inert` rides `state` next to `protected`. Spawn-protected is not prey; inert is never a threat and never solid (walk through uneatable shards). A catchable inert piece is a **free meal**: Hunt it on sight (no closing-speed or remelt wait — a corpse does not flee or fuse) and prefer it over Graze pellets. Do not split-lunge into it.
 
 A threat or prey is **approaching** if inferred radial speed toward us exceeds `APPROACHING_SPEED` (feel parameter). Flee from approaching threats, not from every larger disc that happens to be on screen and receding — except during spawn invulnerability, and except when we are already inside the threat’s disc. Panic radius is `FLEE_PANIC_RADII * radius(our mass) + flee_padding + radius(threat)` so a giant covering us is panic even if they are not closing.
 
