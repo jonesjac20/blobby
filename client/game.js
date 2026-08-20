@@ -108,6 +108,8 @@ let nextState = null;
 let nextArrivedAt = 0;
 let previousArrivedAt = 0;
 let latestFood = [];
+/** Recycled pellet objects so a food delta does not allocate 1600 points. */
+const foodPool = [];
 
 /** @type {{ x: number, y: number } | null} */
 let pointer = null;
@@ -270,6 +272,36 @@ function connect() {
   });
 }
 
+function applyFullFood(pairs) {
+  const n = pairs.length;
+  while (latestFood.length < n) {
+    const recycled = foodPool.pop();
+    latestFood.push(recycled || { x: 0, y: 0 });
+  }
+  while (latestFood.length > n) {
+    foodPool.push(latestFood.pop());
+  }
+  for (let i = 0; i < n; i++) {
+    latestFood[i].x = pairs[i][0];
+    latestFood[i].y = pairs[i][1];
+  }
+}
+
+function applyFoodDelta(add, remove) {
+  for (const pair of remove || []) {
+    const x = pair[0];
+    const y = pair[1];
+    const index = latestFood.findIndex((point) => point.x === x && point.y === y);
+    if (index >= 0) foodPool.push(latestFood.splice(index, 1)[0]);
+  }
+  for (const pair of add || []) {
+    const point = foodPool.pop() || { x: 0, y: 0 };
+    point.x = pair[0];
+    point.y = pair[1];
+    latestFood.push(point);
+  }
+}
+
 function onMessage(event) {
   let msg;
   try {
@@ -288,7 +320,11 @@ function onMessage(event) {
       resetPrediction();
       break;
     case "food":
-      latestFood = (msg.food || []).map(([x, y]) => ({ x, y }));
+      if (Array.isArray(msg.food)) {
+        applyFullFood(msg.food);
+      } else {
+        applyFoodDelta(msg.add, msg.remove);
+      }
       break;
     case "state":
       applyConfig(msg);

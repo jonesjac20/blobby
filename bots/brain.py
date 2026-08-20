@@ -91,13 +91,44 @@ def new_memory(seed: int | None = None) -> Memory:
 
 
 class FoodIndex:
-    """100×100 graze buckets. Rebuilt when the food version changes, once per process."""
+    """100×100 graze buckets. Rebuilt on a full food snapshot, patched on deltas."""
 
     def __init__(self) -> None:
         self.version: object = None
         self.cells: dict[tuple[int, int], list[tuple[float, float]]] = {}
         self.pellets: list[tuple[float, float]] = []
         self.rebuilds: int = 0
+
+    @staticmethod
+    def _xy(item: object) -> tuple[float, float]:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            return float(item[0]), float(item[1])
+        if isinstance(item, dict):
+            return float(item["x"]), float(item["y"])
+        raise TypeError(f"unusable pellet {item!r}")
+
+    def _put(self, x: float, y: float) -> None:
+        pair = (x, y)
+        self.pellets.append(pair)
+        key = (int(math.floor(x / GRAZE_CELL)), int(math.floor(y / GRAZE_CELL)))
+        self.cells.setdefault(key, []).append(pair)
+
+    def _drop(self, x: float, y: float) -> None:
+        pair = (x, y)
+        try:
+            self.pellets.remove(pair)
+        except ValueError:
+            return
+        key = (int(math.floor(x / GRAZE_CELL)), int(math.floor(y / GRAZE_CELL)))
+        bucket = self.cells.get(key)
+        if not bucket:
+            return
+        try:
+            bucket.remove(pair)
+        except ValueError:
+            return
+        if not bucket:
+            del self.cells[key]
 
     def update(self, version: object, pellets: list) -> None:
         if version == self.version:
@@ -107,13 +138,20 @@ class FoodIndex:
         self.pellets = []
         self.cells = {}
         for item in pellets:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                x, y = float(item[0]), float(item[1])
-            else:
-                x, y = float(item["x"]), float(item["y"])
-            self.pellets.append((x, y))
-            key = (int(math.floor(x / GRAZE_CELL)), int(math.floor(y / GRAZE_CELL)))
-            self.cells.setdefault(key, []).append((x, y))
+            x, y = self._xy(item)
+            self._put(x, y)
+
+    def apply_delta(self, version: object, add: list, remove: list) -> None:
+        """Patch the index without a full rebuild. No-op until a full `update`."""
+        if self.version is None or version == self.version:
+            return
+        self.version = version
+        for item in remove:
+            x, y = self._xy(item)
+            self._drop(x, y)
+        for item in add:
+            x, y = self._xy(item)
+            self._put(x, y)
 
     def neighborhood(self, x: float, y: float) -> list[tuple[float, float]]:
         cx = int(math.floor(x / GRAZE_CELL))

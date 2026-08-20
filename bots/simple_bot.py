@@ -137,9 +137,13 @@ class BotClient:
             self.initial_player_mass = float(msg["initialPlayerMass"])
 
     def _on_food(self, msg: dict) -> None:
-        pellets = msg.get("food") or []
         version = msg.get("version")
-        self.food_index.update(version, pellets)
+        if "food" in msg:
+            self.food_index.update(version, msg.get("food") or [])
+            return
+        self.food_index.apply_delta(
+            version, msg.get("add") or [], msg.get("remove") or []
+        )
 
     def _decide_and_send(self, ws, state: dict) -> None:
         if self.self_id is None:
