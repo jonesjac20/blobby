@@ -25,7 +25,7 @@ import {
   resizeCanvas,
   screenToWorld,
   speedForMass,
-} from "./render.js";
+} from "./render.js?v=food-delta-2";
 
 const FOLLOW_SMOOTHING = 6;
 // Floor on the stop radius, in screen pixels. The real stop distance is one
@@ -110,6 +110,8 @@ let previousArrivedAt = 0;
 let latestFood = [];
 /** Recycled pellet objects so a food delta does not allocate 1600 points. */
 const foodPool = [];
+/** Deltas are ignored until a full `food` snapshot lands (same as the bots). */
+let foodSnapshotReady = false;
 
 /** @type {{ x: number, y: number } | null} */
 let pointer = null;
@@ -248,6 +250,7 @@ function connect() {
     nextArrivedAt = 0;
     previousArrivedAt = 0;
     latestFood = [];
+    foodSnapshotReady = false;
     resetPrediction();
     syncJoinButtons();
     // The server removes a socket's player when it closes, so the life that was
@@ -322,9 +325,14 @@ function onMessage(event) {
     case "food":
       if (Array.isArray(msg.food)) {
         applyFullFood(msg.food);
-      } else {
+        foodSnapshotReady = true;
+      } else if (foodSnapshotReady) {
+        // Pre-food_delta servers reused type `food` for add/remove.
         applyFoodDelta(msg.add, msg.remove);
       }
+      break;
+    case "food_delta":
+      if (foodSnapshotReady) applyFoodDelta(msg.add, msg.remove);
       break;
     case "state":
       applyConfig(msg);

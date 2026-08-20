@@ -177,7 +177,7 @@ async def healthz(request: web.Request) -> web.Response:
 async def index(_request: web.Request) -> web.FileResponse:
     return web.FileResponse(
         CLIENT_DIR / "index.html",
-        headers={"Cache-Control": "no-cache"},
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -188,7 +188,7 @@ async def client_file(request: web.Request) -> web.FileResponse:
     path = CLIENT_DIR / name
     if not path.is_file():
         raise web.HTTPNotFound()
-    return web.FileResponse(path, headers={"Cache-Control": "no-cache"})
+    return web.FileResponse(path, headers={"Cache-Control": "no-store"})
 
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:

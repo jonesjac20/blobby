@@ -211,7 +211,7 @@ class BotClient:
                 self._apply_config(data)
                 continue
             # Update food index (food has changed since last tick)
-            if kind == "food":
+            if kind in ("food", "food_delta"):
                 self._on_food(data)
                 continue
             # Respawn the bot on game over

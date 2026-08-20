@@ -518,7 +518,7 @@ def test_root_serves_the_menu():
             response = await client.get("/")
             text = await response.text()
             assert response.status == 200
-            assert response.headers.get("Cache-Control") == "no-cache"
+            assert response.headers.get("Cache-Control") == "no-store"
             assert "Play" in text
             assert "Spectate" in text
             assert "Game Over" in text
@@ -533,7 +533,7 @@ def test_game_client_files_are_served():
             for path in ("/index.html", "/game.js", "/render.js", "/style.css"):
                 response = await client.get(path)
                 assert response.status == 200, path
-                assert response.headers.get("Cache-Control") == "no-cache", path
+                assert response.headers.get("Cache-Control") == "no-store", path
 
     asyncio.run(body())
 
@@ -668,12 +668,14 @@ def test_eating_a_pellet_resends_food():
         assert first["type"] == "food"
         assert first["food"] == [[500, 500]]
         assert resent == {
-            "type": "food",
+            "type": "food_delta",
             "version": 2,
             "add": [],
             "remove": [[500, 500]],
         }
         assert "food" not in resent
+        # Cached clients still did `latestFood = (msg.food || []).map(...)` on
+        # every `type: food`. A delta of that type would wipe the pellets.
         assert world.food == {}
 
     asyncio.run(body())
