@@ -72,9 +72,9 @@ INITIAL_PLAYER_MASS = 50
 SPAWN_INVULN_SECONDS = 5.0
 
 # Mass caps. A snowballing life peels down to remnant mass and dumps the
-# rest into a socket-less inert player. No age trigger: mass does not drain
-# except by being eaten. Bots cap earlier than humans so a 17-bot lobby
-# recycles giants without waiting for a player-sized snowball.
+# rest into a socket-less inert player. Bots cap earlier than humans so a
+# 17-bot lobby recycles giants without waiting for a player-sized snowball.
+# Shards are not solid. After INERT_LIFETIME_SECONDS they become pellets.
 BOT_BURST_MASS = 55000.0
 BOT_BURST_REMNANT_MASS = 1000.0
 PLAYER_BURST_MASS = 75000.0
@@ -92,6 +92,8 @@ BURST_KICK_SCALE_MIN = 0.85
 BURST_KICK_SCALE_MAX = 1.15
 # Global fuse: 17 bots * BURST_SHARDS. A second wave evicts oldest corpses.
 INERT_PIECE_CAP = 102
+# How long a corpse sits as ghost shards before becoming pellets.
+INERT_LIFETIME_SECONDS = 20.0
 # Pellets spawned when a corpse is evicted. Remainder of that mass is discarded.
 INERT_EVICT_FOOD_MAX = 24
 # Extra rim-to-rim gap when placing an inert fragment, as 2 * radius(400), so

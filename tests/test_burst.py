@@ -12,11 +12,14 @@ from server.config import (
     EAT_OVERLAP,
     FOOD_MASS,
     INERT_EVICT_FOOD_MAX,
+    INERT_LIFETIME_SECONDS,
     PLAYER_BURST_MASS,
     PLAYER_BURST_REMNANT_MASS,
     SPAWN_INVULN_SECONDS,
+    SPLIT_KICK_DECAY_SECONDS,
     TICK_RATE,
     burst_nav_gap,
+    speed_for_mass,
 )
 from server.loop import process_tick
 from server.models import Food
@@ -144,6 +147,25 @@ def test_inert_cannot_eat_a_smaller_player(world):
     assert pytest.approx(corpse.pieces[0].mass) == 20000
 
 
+def test_uneatable_inert_does_not_block_a_player(world):
+    """Burst shards are ghosts: walk through, eat only at the mass ratio."""
+    corpse = add_player(world, "dead", 800.0, 500.0, mass=400)
+    corpse.inert = True
+    corpse.last_burst_split = world.now
+    shard = corpse.pieces[0]
+    shard.split_time = world.now - SPLIT_KICK_DECAY_SECONDS
+    shard.vx = shard.vy = 0.0
+    shard.initial_kick_vx = shard.initial_kick_vy = 0.0
+    frozen = (shard.x, shard.y)
+    bumper = add_player(world, "bumper", 800.0, 500.0, mass=50, last_input=(1.0, 0.0))
+    start = bumper.pieces[0].x
+    advance(world, 0.5, 1.0 / TICK_RATE)
+    assert shard.x == pytest.approx(frozen[0])
+    assert shard.y == pytest.approx(frozen[1])
+    assert bumper.pieces[0].x > start + speed_for_mass(50) * 0.4
+    assert bumper.id in world.players
+
+
 def test_inert_cannot_eat_food(world):
     corpse = add_player(world, "dead", 500.0, 500.0, mass=200)
     corpse.inert = True
@@ -211,15 +233,20 @@ def test_inert_shards_place_a_navigable_gap(world):
         )
 
 
-def test_inert_shards_persist_past_forty_five_seconds(world):
+def test_inert_shards_expire_into_food_after_lifetime(world):
     player = add_player(world, "bot", 1000.0, 1000.0, mass=BOT_BURST_MASS)
     player.bot = True
     step(world, 1.0 / 30.0)
     corpse = next(p for p in world.players.values() if p.inert)
     corpse_id = corpse.id
-    advance(world, 46.0, 1.0)
+
+    advance(world, INERT_LIFETIME_SECONDS - 1.0, 1.0 / TICK_RATE)
     assert corpse_id in world.players
-    assert len(world.players[corpse_id].pieces) == BURST_SHARDS
+
+    advance(world, 2.0, 1.0 / TICK_RATE)
+    assert corpse_id not in world.players
+    assert not any(player.inert for player in world.players.values())
+    assert len(world.food) <= INERT_EVICT_FOOD_MAX
 
 
 def test_inert_cap_evicts_oldest_corpse_into_capped_pellets(world, monkeypatch):

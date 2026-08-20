@@ -57,8 +57,8 @@ LAST_TICK_KEY = web.AppKey("last_tick", TickStamp)
 def _state_is_stale_for(session: ClientSession, payload: dict) -> bool:
     """Whether this snapshot would describe a world the socket cannot be in yet.
 
-    A join can land in the middle of the loop below, between `serialize_state`
-    and this socket's turn. Both orderings are wrong for a playing client:
+    A join can land in the middle of `_emit`, between `serialize_state` and
+    this socket's send. Both orderings are wrong for a playing client:
     a snapshot naming the new player before `welcome` gives it an id it has
     not been told is its own, and the pre-join snapshot after `welcome` omits
     the player entirely, so a follow-cam finds nothing. Spectators have no
@@ -71,6 +71,34 @@ def _state_is_stale_for(session: ClientSession, payload: dict) -> bool:
     return all(player["id"] != session.player_id for player in payload["players"])
 
 
+async def _emit_session(
+    session: ClientSession,
+    payload: dict,
+    encoded: str,
+    stream: FoodStream | None,
+) -> None:
+    """Food then state for one socket. Join-window guards are per-session."""
+    if session.ws is None or session.ws.closed:
+        return
+    if stream is not None and session.food_version != stream.version:
+        # Record the version only after a successful send. A raise that
+        # `_emit` swallows then retries next tick; a join-window state
+        # skip cannot desync food because food is not in `state`. Full
+        # snapshot for version 0 or a gap larger than 1; delta otherwise.
+        try:
+            await session.ws.send_str(stream.encoded_for(session.food_version))
+        except Exception:
+            pass
+        else:
+            session.food_version = stream.version
+    if _state_is_stale_for(session, payload):
+        return
+    try:
+        await session.ws.send_str(encoded)
+    except Exception:
+        return
+
+
 async def _emit(
     sessions: list[ClientSession],
     payload: dict,
@@ -78,25 +106,13 @@ async def _emit(
     stream: FoodStream | None = None,
 ) -> None:
     encoded = encode_json(payload)
-    for session in list(sessions):
-        if session.ws is None or session.ws.closed:
-            continue
-        if stream is not None and session.food_version != stream.version:
-            # Record the version only after a successful send. A raise that
-            # `_emit` swallows then retries next tick; a join-window state
-            # skip cannot desync food because food is not in `state`.
-            try:
-                await session.ws.send_str(stream.encoded)
-            except Exception:
-                pass
-            else:
-                session.food_version = stream.version
-        if _state_is_stale_for(session, payload):
-            continue
-        try:
-            await session.ws.send_str(encoded)
-        except Exception:
-            continue
+    await asyncio.gather(
+        *(
+            _emit_session(session, payload, encoded, stream)
+            for session in list(sessions)
+        ),
+        return_exceptions=True,
+    )
     for session, message in deaths:
         # process_tick clears player_id before this await; a join in the
         # window above starts a new life. That game_over belongs to the
@@ -176,7 +192,9 @@ async def client_file(request: web.Request) -> web.FileResponse:
 
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse(heartbeat=WS_HEARTBEAT_SECONDS)
+    ws = web.WebSocketResponse(
+        heartbeat=WS_HEARTBEAT_SECONDS, compress=False
+    )
     await ws.prepare(request)
     session = ClientSession(ws=ws)
     sessions: list[ClientSession] = request.app[SESSIONS_KEY]
