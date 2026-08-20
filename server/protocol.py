@@ -88,8 +88,11 @@ class FoodStream:
     half-unit shift is sub-pixel at play zoom, and dropping the 32-hex ids is
     what makes the message small enough to send at all. `encoded` is the full
     field dumped once; `encoded_delta` is the add/remove against the previous
-    field. `_emit` sends the full string to a socket at version 0 or more than
-    one version behind, and the delta when the socket is exactly one behind.
+    field (`type: food_delta`, not `food`). A cached client that still does
+    `food = msg.food || []` would wipe pellets on the first eat if a delta
+    reused `type: food`. `_emit` sends the full string to a socket at version
+    0 or more than one version behind, and the delta when the socket is
+    exactly one behind.
     """
 
     def __init__(self) -> None:
@@ -99,7 +102,7 @@ class FoodStream:
         self.payload: dict = {"type": "food", "version": 0, "food": []}
         self.encoded: str = encode_json(self.payload)
         self.delta_payload: dict = {
-            "type": "food",
+            "type": "food_delta",
             "version": 0,
             "add": [],
             "remove": [],
@@ -121,7 +124,7 @@ class FoodStream:
         }
         self.encoded = encode_json(self.payload)
         self.delta_payload = {
-            "type": "food",
+            "type": "food_delta",
             "version": self.version,
             "add": add,
             "remove": remove,

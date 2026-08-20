@@ -466,7 +466,7 @@ def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
         "food": [[101, 200]],
     }
     assert stream.delta_payload == {
-        "type": "food",
+        "type": "food_delta",
         "version": 1,
         "add": [[101, 200]],
         "remove": [],
@@ -482,7 +482,7 @@ def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
     assert stream.version == 2
     assert stream.payload == {"type": "food", "version": 2, "food": []}
     assert stream.delta_payload == {
-        "type": "food",
+        "type": "food_delta",
         "version": 2,
         "add": [],
         "remove": [[101, 200]],
