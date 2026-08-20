@@ -465,6 +465,12 @@ def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
         "version": 1,
         "food": [[101, 200]],
     }
+    assert stream.delta_payload == {
+        "type": "food",
+        "version": 1,
+        "add": [[101, 200]],
+        "remove": [],
+    }
     assert json.loads(stream.encoded) == stream.payload
 
     stream.refresh(world)
@@ -475,6 +481,16 @@ def test_food_stream_sends_rounded_pairs_and_only_bumps_on_change(world):
     stream.refresh(world)
     assert stream.version == 2
     assert stream.payload == {"type": "food", "version": 2, "food": []}
+    assert stream.delta_payload == {
+        "type": "food",
+        "version": 2,
+        "add": [],
+        "remove": [[101, 200]],
+    }
+    assert json.loads(stream.encoded_delta) == stream.delta_payload
+    assert stream.encoded_for(0) == stream.encoded
+    assert stream.encoded_for(1) == stream.encoded_delta
+    assert stream.encoded_for(2) == stream.encoded
 
 
 def test_state_frame_without_food_is_under_4kb():
