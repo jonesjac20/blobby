@@ -14,7 +14,9 @@ MIN_SPLIT_MASS = 35
 MAX_PIECES = 8
 EAT_RATIO = 1.25
 REMERGE_SECONDS = 10
-SPLIT_KICK_DECAY_SECONDS = 3
+# Kick travel is the same integral as before; a short window makes the pop
+# a lunge and lets cohesion start pulling the cluster back together quickly.
+SPLIT_KICK_DECAY_SECONDS = 0.6
 
 # --- simulation clock ------------------------------------------------------
 #
@@ -70,9 +72,9 @@ INITIAL_PLAYER_MASS = 50
 SPAWN_INVULN_SECONDS = 5.0
 
 # Mass caps. A snowballing life peels down to remnant mass and dumps the
-# rest into a socket-less inert player. No age trigger: mass does not drain
-# except by being eaten. Bots cap earlier than humans so a 17-bot lobby
-# recycles giants without waiting for a player-sized snowball.
+# rest into a socket-less inert player. Bots cap earlier than humans so a
+# 17-bot lobby recycles giants without waiting for a player-sized snowball.
+# Shards are not solid. After INERT_LIFETIME_SECONDS they become pellets.
 BOT_BURST_MASS = 55000.0
 BOT_BURST_REMNANT_MASS = 1000.0
 PLAYER_BURST_MASS = 75000.0
@@ -90,6 +92,8 @@ BURST_KICK_SCALE_MIN = 0.85
 BURST_KICK_SCALE_MAX = 1.15
 # Global fuse: 17 bots * BURST_SHARDS. A second wave evicts oldest corpses.
 INERT_PIECE_CAP = 102
+# How long a corpse sits as ghost shards before becoming pellets.
+INERT_LIFETIME_SECONDS = 20.0
 # Pellets spawned when a corpse is evicted. Remainder of that mass is discarded.
 INERT_EVICT_FOOD_MAX = 24
 # Extra rim-to-rim gap when placing an inert fragment, as 2 * radius(400), so
@@ -104,7 +108,7 @@ BASE_SPEED = 150
 # Split-kick displacement as a multiple of the pre-split parent piece's radius.
 # Three radii at mass 100 is ~17 world units; heavier parents lunge farther.
 # A hard cap below keeps a giant from crossing the map in one press. Decay
-# is SPLIT_KICK_DECAY_SECONDS (feel, not the source plan's 0.5s).
+# is SPLIT_KICK_DECAY_SECONDS (feel; the source plan's ~0.5s, not a long coast).
 SPLIT_KICK_RADII = 3
 # Cap on kick displacement, as a fraction of the shorter arena axis. Derived at
 # call time from WORLD_WIDTH / WORLD_HEIGHT so resizing the rectangle moves it.
@@ -135,7 +139,9 @@ EAT_OVERLAP = 0.5
 MERGE_OVERLAP = 0.6
 
 # World units per second each of a player's pieces drifts toward its neighbours.
-COHESION_SPEED = 4.0
+# High enough that a kicked chain collapses into a cluster in about a second,
+# not so high that a stray fragment teleports across the map before remerge.
+COHESION_SPEED = 80.0
 # World units per second once a pair's remerge timer clears, at zero gap.
 # Close in, this is the whole pull: a resting pair still sinks over several
 # ticks rather than snapping. Far out, MERGE_RECALL adds to it.

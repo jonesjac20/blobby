@@ -9,6 +9,7 @@ import pytest
 from bots.brain import (
     FLEE_MEMORY_SECONDS,
     GRAZE_CELL,
+    HUNT_MEMORY_SECONDS,
     KIND_PEER,
     KIND_PREY,
     KIND_THREAT,
@@ -21,6 +22,8 @@ from bots.brain import (
     Personality,
     classify_piece,
     decide,
+    intercept_time,
+    lead_point,
     new_memory,
     sacrifice_ok,
     split_lunge_ok,
@@ -239,6 +242,44 @@ def test_graze_picks_a_closer_pellet_in_a_neighbor_cell_over_one_in_its_own():
     assert abs(dy) < 0.2
 
 
+def test_graze_yields_a_pellet_a_peer_is_closer_to():
+    memory = new_memory(0)
+    peer = _player("p", [_piece("p", 180.0, 150.0, 50)])
+    claimed = (190.0, 150.0)
+    free = (140.0, 150.0)
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 150.0, 150.0, 50)],
+            others=[peer],
+            food=[claimed, free],
+        ),
+        memory,
+    )
+    assert split is False
+    assert memory.state == STATE_GRAZE
+    assert memory.graze_target == free
+    assert dx < -0.9
+    assert abs(dy) < 0.2
+
+
+def test_graze_does_not_ram_a_peer_for_their_pellet():
+    memory = new_memory(0)
+    memory.wander_waypoint = (50.0, 200.0)
+    peer = _player("p", [_piece("p", 220.0, 200.0, 50)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 50)],
+            others=[peer],
+            food=[(240.0, 200.0)],
+        ),
+        memory,
+    )
+    assert split is False
+    assert memory.state == STATE_GRAZE
+    assert memory.graze_target is None
+    assert dx < 0.0
+
+
 def test_food_index_rebuilds_once_per_version():
     index = FoodIndex()
     pellets = [[10, 10], [20, 20]]
@@ -340,9 +381,7 @@ def test_dwell_holds_hunt_when_prey_flickers_away():
     )
     decide(view_graze, memory)
     assert memory.state == STATE_HUNT
-    memory.ticks_in_state = 100
-    decide(view_graze, memory)
-    assert memory.state == STATE_GRAZE
+    assert memory.last_prey is not None
 
 
 def test_flee_interrupts_graze_immediately():
@@ -535,6 +574,24 @@ def test_split_lunge_each_checklist_line_can_fail():
     )
 
 
+def test_intercept_time_stationary_is_distance_over_speed():
+    t = intercept_time(0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 50.0, 10.0)
+    assert t == pytest.approx(2.0)
+    ax, ay = lead_point(0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 50.0, 10.0, 1000.0, 1000.0)
+    assert ax == pytest.approx(100.0)
+    assert ay == pytest.approx(0.0)
+
+
+def test_intercept_time_leads_a_crossing_target():
+    t = intercept_time(0.0, 0.0, 80.0, 0.0, 0.0, 40.0, 100.0, 5.0)
+    assert t is not None
+    assert t > 0.0
+    ax, ay = lead_point(0.0, 0.0, 80.0, 0.0, 0.0, 40.0, 100.0, 5.0, 1000.0, 1000.0)
+    assert ax == pytest.approx(80.0)
+    assert ay == pytest.approx(40.0 * t)
+    assert ay > 0.0
+
+
 def test_hunt_walks_until_kick_range_then_does_not_split_early():
     memory = new_memory(0)
     prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
@@ -591,6 +648,53 @@ def test_hunt_lunge_is_not_rotated_by_a_protected_meal():
     assert split is True
     assert dx > 0.9
     assert abs(dy) < 0.2
+
+
+def test_hunt_walk_leads_a_crossing_prey():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey],
+            prev_positions={"p": (280.0, 195.0)},
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=0.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.0
+    assert dy > 0.25
+
+
+def test_hunt_lunge_leads_a_moving_prey():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 210.0, 200.0, 40)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 200)],
+            others=[prey],
+            prev_positions={"p": (210.0, 197.0)},
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is True
+    assert dx > 0.5
+    assert dy > 0.25
+
+
+def test_split_lunge_waits_when_intercept_is_beyond_kick():
+    """Current disc is in kick range, but a receding intercept is not — do not fire behind them."""
+    ours = [_piece("a", 200.0, 200.0, 200)]
+    here = _piece("p", 220.0, 200.0, 40)
+    assert split_lunge_ok(**_lunge_kwargs(ours, here)) is True
+    fleeing = {**here, "vx": 150.0, "vy": 0.0}
+    assert split_lunge_ok(**_lunge_kwargs(ours, fleeing)) is False
 
 
 def test_sacrifice_checklist_and_timid_disables_it():
@@ -735,10 +839,10 @@ def test_hunter_steers_off_an_overlapping_protected_meal():
     assert (dx, dy) != (0.0, 0.0)
 
 
-def test_futile_chase_of_fleeing_prey_stays_graze():
+def test_chase_of_fleeing_prey_enters_hunt():
     memory = new_memory(0)
     prey = _player("p", [_piece("p", 350.0, 200.0, 20)])
-    decide(
+    dx, dy, split = decide(
         _view(
             [_piece("a", 200.0, 200.0, 80)],
             others=[prey],
@@ -748,7 +852,171 @@ def test_futile_chase_of_fleeing_prey_stays_graze():
         ),
         memory,
     )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0.9
+    assert abs(dy) < 0.2
+
+
+def test_hunt_keeps_steering_to_last_prey_after_it_leaves_vision():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey],
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=0.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert memory.last_prey is not None
+    assert memory.last_prey_id == "p"
+    assert dx > 0
+
+    gone = _view(
+        [_piece("a", 200.0, 200.0, 80)],
+        others=[_player("p", [_piece("p", 2500.0, 200.0, 20)])],
+        food=[(190.0, 200.0)],
+        personality=Personality(hunt_range=1.0, split_willingness=0.0),
+    )
+    dx, dy, split = decide(gone, memory)
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert dx > 0
+    assert memory.last_prey[0] == pytest.approx(280.0)
+
+
+def test_hunt_memory_expires_into_graze():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
+    decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey],
+            food=[(190.0, 200.0)],
+            tick_rate=10,
+            personality=Personality(hunt_range=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    gone = _view(
+        [_piece("a", 200.0, 200.0, 80)],
+        food=[(190.0, 200.0)],
+        tick_rate=10,
+    )
+    for _ in range(int(HUNT_MEMORY_SECONDS * 10) + 2):
+        decide(gone, memory)
     assert memory.state == STATE_GRAZE
+    assert memory.last_prey is None
+    assert memory.last_prey_id is None
+
+
+def test_hunt_aborts_to_flee_when_a_predator_approaches():
+    memory = new_memory(0)
+    prey = _player("p", [_piece("p", 280.0, 200.0, 20)])
+    decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey],
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert memory.last_prey is not None
+
+    threat = _player("t", [_piece("t", 420.0, 200.0, 200)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[prey, threat],
+            prev_positions={"t": (422.0, 200.0), "p": (280.0, 200.0)},
+            food=[(190.0, 200.0)],
+            personality=Personality(hunt_range=1.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_FLEE
+    assert split is False
+    assert dx < 0
+    assert memory.last_prey is None
+    assert memory.last_prey_id is None
+
+
+def test_hunt_picks_heavier_edible_over_nearer_snack():
+    memory = new_memory(0)
+    snack = _player("s", [_piece("s", 230.0, 200.0, 20)])
+    meal = _player("m", [_piece("m", 300.0, 200.0, 50)])
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[snack, meal],
+            food=[(210.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=0.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert memory.last_prey_id == "m"
+    assert dx > 0.9
+    assert abs(dy) < 0.2
+
+
+def test_hunt_prefers_split_easy_kill_over_heavier_whole_prey():
+    memory = new_memory(0)
+    whole = _player("w", [_piece("w", 260.0, 200.0, 55)])
+    split_prey = _player(
+        "s",
+        [
+            _piece("s1", 320.0, 200.0, 40, remerge_in=8.0),
+            _piece("s2", 340.0, 200.0, 30, remerge_in=8.0),
+            _piece("s3", 360.0, 210.0, 25, remerge_in=8.0),
+        ],
+    )
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[whole, split_prey],
+            food=[(210.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=0.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert memory.last_prey_id == "s1"
+    assert dx > 0.9
+
+
+def test_hunt_skips_soon_to_fuse_cluster_for_heavier_whole_prey():
+    memory = new_memory(0)
+    whole = _player("w", [_piece("w", 300.0, 200.0, 50)])
+    split_snack = _player(
+        "s",
+        [
+            _piece("s1", 230.0, 200.0, 30, remerge_in=PUNISH_REMERGE_FLOOR),
+            _piece("s2", 240.0, 200.0, 30, remerge_in=0.5),
+        ],
+    )
+    dx, dy, split = decide(
+        _view(
+            [_piece("a", 200.0, 200.0, 80)],
+            others=[whole, split_snack],
+            food=[(210.0, 200.0)],
+            personality=Personality(hunt_range=1.0, split_willingness=0.0),
+        ),
+        memory,
+    )
+    assert memory.state == STATE_HUNT
+    assert split is False
+    assert memory.last_prey_id == "w"
+    assert dx > 0.9
+    assert abs(dy) < 0.2
 
 
 # --- plumbing helpers -----------------------------------------------------

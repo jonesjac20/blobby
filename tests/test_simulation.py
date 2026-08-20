@@ -653,7 +653,7 @@ def test_split_halves_drift_back_into_contact(world):
     advance(world, SPLIT_KICK_DECAY_SECONDS, TICK)
     assert separation(parent, child) > 25.0
 
-    advance(world, 3.0, TICK)
+    advance(world, 1.0, TICK)
     assert simulation.engulfment(parent, child) == pytest.approx(
         OWN_PIECE_OVERLAP, abs=1e-9
     )
@@ -664,6 +664,24 @@ def test_split_halves_drift_back_into_contact(world):
     assert simulation.engulfment(parent, child) == pytest.approx(
         OWN_PIECE_OVERLAP, abs=1e-9
     )
+
+
+def test_a_steering_split_cluster_stays_compact(world):
+    """Exponential splits used to leave a long gappy line while dragging."""
+    player = add_player(world, x=400.0, y=600.0, mass=280, last_input=(1.0, 0.0))
+    for _ in range(3):
+        split(world, player, (1.0, 0.0))
+    assert len(player.pieces) == MAX_PIECES
+
+    player.last_input = (1.0, 0.0)
+    advance(world, SPLIT_KICK_DECAY_SECONDS + 1.0, TICK)
+
+    xs = [piece.x for piece in player.pieces]
+    ys = [piece.y for piece in player.pieces]
+    span = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    radius = simulation.radius_for_mass(min(piece.mass for piece in player.pieces))
+    assert span < 12.0 * radius
+    assert len(player.pieces) == MAX_PIECES
 
 
 def test_cohesion_does_not_eat_into_the_split_kick(world):

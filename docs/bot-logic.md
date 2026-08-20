@@ -13,7 +13,7 @@ Do not retune these in the bot. Cite the live constants, not remembered feel-pas
 - **Eat is per piece.** `A.mass > B.mass * EAT_RATIO` (`1.25`) **and** `EAT_OVERLAP` (`0.5`). Never player-total vs player-total. A 400-mass player split into 50s is food to a 70; a 70 split into 35s is food to a 50.
 - **A predator at the eat ratio is always slower than its prey.** `speed_for_mass` uses `SPEED_FALLOFF = 0.7`, so at `1.25×` the predator moves at `(1/1.25)**0.7 ≈ 85%` of prey speed. Open-field chasing never works. Corner it or split into it (feel-pass A4; Phase 4 checklist).
 - **After a one-piece split, the fragment is edible only if `M/2 > 1.25 * prey`.** Parent must be `> 2.5×` the prey piece. A 1.3× “smaller blob” is not a split target.
-- **Exponential split, one shared `last_input`.** `try_split` halves every eligible piece in one press. **Only the new piece is kicked;** the parent stays at half mass with its kick cleared. Kick displacement is `min(SPLIT_KICK_RADII * radius_for_mass(parent), split_kick_displacement_max())`, plus simultaneous steering at `speed_for_mass(half)`. Call `split_kick_speed(parent_mass)`, not a constant. The cap is `min(WORLD_WIDTH, WORLD_HEIGHT) * SPLIT_KICK_MAX_ARENA_FRACTION`. Then `REMERGE_SECONDS` (`10`) of vulnerability: eat is per-piece, so two 100s can be eaten by anyone over 125.
+- **Exponential split, one shared `last_input`.** `try_split` halves every eligible piece in one press. **Only the new piece is kicked;** the parent stays at half mass with its kick cleared. Kick displacement is `min(SPLIT_KICK_RADII * radius_for_mass(parent), split_kick_displacement_max())`, plus simultaneous steering at `speed_for_mass(total)` for every piece in the cluster. Call `split_kick_speed(parent_mass)`, not a constant. The cap is `min(WORLD_WIDTH, WORLD_HEIGHT) * SPLIT_KICK_MAX_ARENA_FRACTION`. Then `REMERGE_SECONDS` (`10`) of vulnerability: eat is per-piece, so two 100s can be eaten by anyone over 125.
 - **`protected` is not prey.** Spawn invulnerability is on the player, not the piece. Splitting during the window neither forfeits nor extends it. A protected player still eats normally.
 - **No velocity on the wire.** [`serialize_state`](../server/protocol.py) sends `id`, `name`, `color`, `protected`, `inert`, `peak_mass`, and `pieces[{piece_id, x, y, mass, remerge_in}]`. Closing speed is inferred from the last two `state` snapshots. Food is a separate held field, same as [`client/game.js`](../client/game.js): keep the latest `food` message and splice it onto the view.
 - **No pathfinding.** Source plan §7. Corner/wall avoidance is a steering bias, not A*.
@@ -27,11 +27,11 @@ The server broadcasts the full world. Using that omniscience makes bots psychic.
 
 **Vision** is a circle around the mass-weighted centroid, sized like the follow-cam in [`client/render.js`](../client/render.js): `baseSpan = 420` at `INITIAL_PLAYER_MASS`, scaling with `sqrt(mass / 50)`. Starting **radius** is half that span (~210 at spawn), times personality `vision_scale`. A small hysteresis band (`VISION_EDGE_HYSTERESIS`) so entities do not flicker at the rim.
 
-Vision culls **other players** for classification. Hunt never uses off-screen prey. Flee keeps a short **last-known threat point** after they leave the circle (`FLEE_MEMORY_SECONDS`); it must not refresh that point from an off-screen piece. Food is not fog-of-war — Graze sees pellets like the browser holding the latest `food` message.
+Vision culls **other players** for classification. New Hunt commits never use off-screen prey. Hunt may keep a short **last-known prey point** after they leave the circle (`HUNT_MEMORY_SECONDS`); Flee keeps a **last-known threat point** (`FLEE_MEMORY_SECONDS`). Neither ghost may refresh from an off-screen piece. Food is not fog-of-war — Graze sees pellets like the browser holding the latest `food` message.
 
 **Graze** picks the nearest pellet in the bot’s 100×100 cell and its 8 neighbors (a 3×3), with target hysteresis. Empty 3×3 → wander (wall-aware), never sit at `(0,0)` while a local pellet exists. The 100×100 grid is a **client-side targeting** index, rebuilt once per process when the food version changes. It is not the server eat scan.
 
-Entities outside vision do not exist for Hunt. Flee uses the same radius for *seeing* a threat — a giant across the map is not a threat — then may keep steering away from the last-seen point.
+Entities outside vision do not exist for a *new* Hunt commit. After a chase starts, Hunt may keep steering toward the last-seen point until interest expires. Flee uses the same radius for *seeing* a threat — a giant across the map is not a threat — then may keep steering away from the last-seen point.
 
 ---
 
@@ -45,7 +45,7 @@ For each foreign piece:
 - **Threat** if `piece.mass > our_weakest_piece.mass * EAT_RATIO` and the owner is not inert.
 - **Peer** otherwise.
 
-`inert` rides `state` next to `protected`. Spawn-protected is not prey; inert is never a threat. A catchable inert piece is a **free meal**: Hunt it on sight (no closing-speed or remelt wait — a corpse does not flee or fuse) and prefer it over Graze pellets. Do not split-lunge into it.
+`inert` rides `state` next to `protected`. Spawn-protected is not prey; inert is never a threat and never solid (walk through uneatable shards). A catchable inert piece is a **free meal**: Hunt it on sight (no closing-speed or remelt wait — a corpse does not flee or fuse) and prefer it over Graze pellets. Do not split-lunge into it.
 
 A threat or prey is **approaching** if inferred radial speed toward us exceeds `APPROACHING_SPEED` (feel parameter). Flee from approaching threats, not from every larger disc that happens to be on screen and receding — except during spawn invulnerability, and except when we are already inside the threat’s disc. Panic radius is `FLEE_PANIC_RADII * radius(our mass) + flee_padding + radius(threat)` so a giant covering us is panic even if they are not closing.
 
@@ -66,7 +66,7 @@ stateDiagram-v2
     Flee --> Hunt: predatorBecamePrey
     Graze --> Hunt: catchablePrey
     Hunt --> Recover: justSplit
-    Hunt --> Graze: preyLost
+    Hunt --> Graze: preyGoneAndInterestExpired
     Recover --> Hunt: freeMealNoSplit
     Recover --> Graze: remerged
 ```
@@ -85,19 +85,27 @@ No speed-splits at range — they feed the predator. One exception, still inside
 
 ### Hunt
 
-A catchable prey in vision, and not Flee/Recover (unless that free meal). Catchable means one of:
+A catchable prey in vision, and not Flee/Recover (unless that free meal). Prey always runs — do not wait for a lazy meal. Catchable means one of:
 
-- **Inert** we can eat. Always. Closing speed, hunt-range, and sibling remelt do not apply — the disc does not run, and fragments never fuse back into a threat. Prefer this over live prey and over Graze.
-- Prey is **not fleeing** (closing or grazing) and we can intercept by walking. Walk this down first; do not split until the kick itself can cover the gap.
+- **Inert** we can eat. Always. Hunt-range and sibling remelt do not apply — the disc does not run, and fragments never fuse back into a threat. Prefer this over live prey and over Graze.
+- Any live unprotected prey **in vision** (within personality `hunt_range`), including receding prey. Steer at the **intercept** (constant-velocity quadratic from the last two snapshots), not the current disc. Do not split until the kick itself can cover the gap to that intercept.
 - Prey is **trapped** (a wall or corner between them and us).
-- **Split-lunge** passes the [checklist](#split-lunge-checklist) below. Chase until the kick reaches, then one `input` aimed from the hitting piece at the prey and `split`. Not used on inert.
+- **Split-lunge** passes the [checklist](#split-lunge-checklist) below. Chase until the kick reaches the intercept, then one `input` aimed from the hitting piece at that predicted point and `split`. Not used on inert.
 - **Punish:** a player who was a threat is now split into pieces we can eat, `remerge_in` above `PUNISH_REMERGE_FLOOR`, and no remaining threatening piece is on a collision course. This is the Flee → Hunt flip, not a fifth state. See [Tactics](#tactics-that-are-not-new-states).
 
-If none of those, do not enter Hunt; keep Grazing. Futile waddling at a fleeing smaller blob is how bots look broken. Protected others are not prey; steer off a shield we could eat rather than graze or hunt onto it.
+**Targeting** among catchable pieces, eat still per-piece (`our_best > piece.mass * EAT_RATIO`):
+
+1. Inert we can eat — largest mass, then nearer.
+2. **Easy kill:** another player with 2+ pieces in vision, every visible piece is prey (no mixed cluster), remelt above `PUNISH_REMERGE_FLOOR`. More fragments beat fewer; then the largest still-edible fragment. Nearest only as a tiebreak.
+3. Otherwise the catchable piece with the most mass. Distance is only a tiebreak.
+
+When the live target leaves vision, keep Hunt and steer toward the last-known point for `HUNT_MEMORY_SECONDS`. Do not refresh that point from an off-screen piece, and do not split-lunge at a ghost. If a different edible appears, switch using the ranking above and refresh interest. Flee interrupts immediately and **clears** hunt interest — after the threat is gone, Hunt only resumes if prey is actually in vision again.
+
+When prey is gone **and** interest has expired, exit to Graze (or Recover if the cluster is still split). Open-field chase of a competent fleer still will not catch without a corner or a lunge; the commit is the aggressive read. Protected others are not prey; steer off a shield we could eat rather than graze or hunt onto it.
 
 ### Graze
 
-Default. Greedy nearest pellet in the bot’s 100×100 cell **plus 8 neighbors**, with target hysteresis so the input does not flicker. Empty 3×3 → wander. Never sit at `(0, 0)` unless there is genuinely nowhere to go — overlapping a camper or a protected meal is not that case; pick an open direction. `input_toward_nearest_food` is the wrong graze — 1800 pellets and thirty bots all converge and orbit.
+Default. Greedy nearest pellet in the bot’s 100×100 cell **plus 8 neighbors**, with target hysteresis so the input does not flicker. Skip a pellet a visible **peer** is strictly closer to — two near-equals locking onto the same food is how they ram and stick. Empty 3×3, or every local pellet claimed by a peer, → wander (wall-aware). While overlapping a peer, add a short repulsion so they slide apart instead of pushing into opposite directions. Never sit at `(0, 0)` unless there is genuinely nowhere to go — overlapping a camper or a protected meal is not that case; pick an open direction. `input_toward_nearest_food` is the wrong graze — 1800 pellets and thirty bots all converge and orbit.
 
 During `SPAWN_INVULN_SECONDS`, threats in vision are Flee, not Graze. Get clear of anyone else sitting on the spawn. A spawn-size split (`50 → 25`) is below `MIN_SPLIT_MASS` on the halves and cannot eat anything a fresh life would hunt; do not open with a lunge.
 
@@ -145,7 +153,7 @@ The competitive core. One `split` message, aimed by the current `input`. All mus
 
 1. At least one piece `>= MIN_SPLIT_MASS`, and not already at `MAX_PIECES`.
 2. After the exponential split, **the fragment that will hit the prey** still satisfies `half_mass > prey.mass * EAT_RATIO`.
-3. The kick pop must cover the gap: `need <=` kick displacement (`split_kick_speed(parent_mass)` integrated over the decay). Do not split from across vision, and do not count `SPLIT_KICK_DECAY_SECONDS` of walking as extra reach. Chase until that range, then aim `input` from the hitter at the prey. Sacrifice still aims along the flee vector. Not used on inert.
+3. The kick pop must cover the gap to the **intercept**, not the current disc: `need <=` kick displacement (`split_kick_speed(parent_mass)` integrated over the decay). Lead with constant-velocity prey motion over `SPLIT_KICK_DECAY_SECONDS`; the lunge speed is average kick plus `speed_for_mass(half)` steering. Do not split from across vision, and do not count `SPLIT_KICK_DECAY_SECONDS` of walking as extra reach. Chase until that range, then aim `input` from the hitter at the intercept. Sacrifice still aims along the flee vector. Not used on inert.
 4. **Safety:** no threat in vision that could eat any resulting fragment (`threat.mass > half * EAT_RATIO`). If more than one piece is eligible, *every* half must pass, or only split when a single piece is eligible (compact body).
 5. Prey is not `protected`.
 6. Not already in Recover unless this is a free meal that does not need a further split.
@@ -162,7 +170,7 @@ Same state machine for every bot. Vary so a table of 3–5 is not a clone army:
 |---|---|
 | `vision_scale` | Multiplier on vision radius |
 | `hunt_range` | How far inside vision a prey is worth committing to |
-| `split_willingness` | Enables sacrifice / split-lunge; timid bots graze and flee only |
+| `split_willingness` | Enables sacrifice / split-lunge; lower values lunge less often |
 | `flee_padding` | Extra panic radius around threats |
 
 Names and colors stay ordinary `join` fields. `protocol.unique_name` will suffix collisions.
@@ -178,7 +186,7 @@ decide(view, memory) -> (dx, dy, split)
 ```
 
 - `view` is vision-culled players + held food + inferred velocities from the last two snapshots, plus our `welcome` id.
-- `memory` is dwell timers, the current graze waypoint, and the current state. Not wall-clock.
+- `memory` is dwell timers, last-known threat/prey ghosts, the current graze waypoint, and the current state. Not wall-clock.
 - `dx, dy` are a finite steering vector, same shape as a human `input` message. `(0, 0)` only when there is genuinely nothing to steer toward — not when overlapping a camper or threat.
 - `split` is a boolean; the plumbing sends `{"type": "split"}` at most once per rising edge, same as the client ignoring key repeat.
 

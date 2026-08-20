@@ -2,16 +2,17 @@
 
 step(world, dt) performs, in order: advance sim time -> apply input and kick ->
 cluster forces -> resolve collisions and clamp to bounds -> collide with food ->
-collide with other players -> mass-cap burst (shatter excess into frozen inert
-shards) -> decay split velocity -> remerge -> enforce inert piece cap ->
-respawn food, eating any pellet that landed inside a disc and refilling until
-none do.
+collide with other players -> mass-cap burst (shatter excess into inert
+shards) -> decay split velocity -> remerge -> expire aged inert into food,
+then enforce the inert piece cap -> respawn food, eating any pellet that
+landed inside a disc and refilling until none do.
 
 Pieces have real bodies here, and every geometric test is a threshold on
 `engulfment` rather than a plain circle touch, so contact and penetration can
 mean different things. A player's own pieces rest overlapped at
 OWN_PIECE_OVERLAP and are drawn together by the cluster forces; different
-players' pieces are solid unless one can eat the other; eating and remerging
+players' pieces are solid unless one can eat the other; inert shards are
+never solid (walk through, eat if the mass ratio allows); eating and remerging
 each need the deeper EAT_OVERLAP and MERGE_OVERLAP.
 """
 
@@ -38,6 +39,7 @@ from server.config import (
     FOOD_GRID_CELL,
     FOOD_MASS,
     INERT_EVICT_FOOD_MAX,
+    INERT_LIFETIME_SECONDS,
     INERT_PIECE_CAP,
     MAX_PIECES,
     MERGE_OVERLAP,
@@ -164,10 +166,6 @@ def _protected_player_ids(world: World) -> set[str]:
     }
 
 
-def _inert_player_ids(world: World) -> set[str]:
-    return {player.id for player in world.players.values() if player.inert}
-
-
 def _kick_active_during_tick(previous_now: float, piece: Piece) -> bool:
     """Whether this piece's split kick contributes displacement this tick.
 
@@ -196,6 +194,7 @@ def step(world: World, dt: float) -> None:
     _apply_mass_bursts(world)
     _decay_split_kicks(world)
     _remerge_pieces(world)
+    _expire_inert_corpses(world)
     _enforce_inert_piece_cap(world)
     _refill_food(world)
 
@@ -222,13 +221,15 @@ def _apply_input_and_move(world: World, previous_now: float, dt: float) -> None:
                 piece.y += piece.initial_kick_vy * kick_seconds
             continue
         input_x, input_y = _normalized(*player.last_input)
-        # Merge-ready pieces steer at the whole body's pace so a light leftover
-        # cannot outrun the core it is supposed to sink into.
+        # A split cluster steers as one body. Per-piece speed lets light
+        # fragments outrun the core and string out into a line; the client
+        # already predicts one shared velocity for the same reason.
         cluster_speed = speed_for_mass(sum(piece.mass for piece in player.pieces))
+        split_cluster = len(player.pieces) > 1
         for piece in player.pieces:
             speed = (
                 cluster_speed
-                if _merge_ready(world, piece)
+                if split_cluster
                 else speed_for_mass(piece.mass)
             )
             kick_seconds = _kick_integral(
@@ -250,9 +251,11 @@ def _cluster_forces(world: World, previous_now: float, dt: float) -> None:
     rate: cohesion may overshoot, and the projection corrects it the same way
     every time.
 
-    Once a piece's remerge timer clears it homes on the cluster centroid at
-    MERGE_PULL_SPEED + MERGE_RECALL * distance, so a fragment that drifted off
-    still returns, and the heavy core (sitting on the centroid) barely moves.
+    Cohesion is a constant COHESION_SPEED, high enough that a kicked chain
+    collapses back into a cluster instead of coasting as a line. Once a piece's
+    remerge timer clears it homes on the cluster centroid at MERGE_PULL_SPEED +
+    MERGE_RECALL * distance, so a fragment that drifted off still returns, and
+    the heavy core (sitting on the centroid) barely moves.
     """
     for player in world.players.values():
         if player.inert:
@@ -333,7 +336,8 @@ def _resolve_collisions(
     Solid pairs (neither can eat the other) cannot tunnel: if one tick of
     travel swaps their sides, projection uses the start-of-tick axis rather
     than the post-swap one. Edible pairs still skip projection so a predator
-    can sink to EAT_OVERLAP.
+    can sink to EAT_OVERLAP. Inert shards are omitted entirely — they are
+    ghosts, not walls — so a remnant or bot cannot be pinned in the burst ring.
 
     The clamp insets each center by its radius, so a piece cannot sit with
     half its body hanging outside the arena. A piece crushed into a corner by
@@ -343,41 +347,32 @@ def _resolve_collisions(
     bodies = [
         (player.id, piece)
         for player in world.players.values()
+        if not player.inert
         for piece in player.pieces
     ]
     protected = _protected_player_ids(world)
-    inert = _inert_player_ids(world)
 
     for _ in range(SEPARATION_PASSES):
         for i, (owner_a, a) in enumerate(bodies):
             for j in range(i + 1, len(bodies)):
                 owner_b, b = bodies[j]
                 if owner_a == owner_b:
-                    if owner_a in inert:
-                        # Keep the burst nav gap; do not settle at OWN_PIECE_OVERLAP.
-                        target = _distance_for_engulfment(a, b, 0.0) + burst_nav_gap()
-                        _project_apart(a, b, target, j)
-                        continue
                     # A mergeable pair is trying to sink into each other.
                     if _merge_ready(world, a) and _merge_ready(world, b):
                         continue
                     target = _distance_for_engulfment(a, b, OWN_PIECE_OVERLAP)
                     _project_apart(a, b, target, j)
                 elif (
-                    owner_a not in inert
-                    and owner_b not in protected
+                    owner_b not in protected
                     and _can_eat(a, b)
                 ) or (
-                    owner_b not in inert
-                    and owner_a not in protected
+                    owner_a not in protected
                     and _can_eat(b, a)
                 ):
                     # Never projected, or the predator could never reach the
                     # EAT_OVERLAP depth that `_eat_other_players` waits for.
                     # A spawn-protected prey is not a live meal, so that pair
                     # stays solid and the predator is shoved off instead.
-                    # Inert is never a predator, so a giant corpse stays solid
-                    # against anyone too small to eat it.
                     continue
                 else:
                     target = _distance_for_engulfment(a, b, 0.0)
@@ -390,8 +385,9 @@ def _resolve_collisions(
                         previous_positions.get(b.piece_id),
                     )
 
-    for _, piece in bodies:
-        piece.x, piece.y = clamp_body_position(piece.x, piece.y, piece.mass)
+    for player in world.players.values():
+        for piece in player.pieces:
+            piece.x, piece.y = clamp_body_position(piece.x, piece.y, piece.mass)
 
 
 def _place_apart_along(
@@ -898,6 +894,25 @@ def _evict_inert_to_food(world: World, corpse: Player) -> None:
         angle = 2.0 * math.pi * index / n + world.rng.uniform(-0.2, 0.2)
         radius = burst_nav_gap() * world.rng.uniform(0.5, 1.5)
         world.add_food(cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
+
+
+def _expire_inert_corpses(world: World) -> None:
+    """Turn aged burst shards into pellets so they cannot pin the map forever."""
+    stale = [
+        player
+        for player in world.players.values()
+        if player.inert
+        and world.now - player.last_burst_split >= INERT_LIFETIME_SECONDS
+    ]
+    for corpse in stale:
+        log.info(
+            "inert expired name=%s pieces=%d age=%.1f",
+            corpse.name,
+            len(corpse.pieces),
+            world.now - corpse.last_burst_split,
+        )
+        _evict_inert_to_food(world, corpse)
+        world.remove_player(corpse.id)
 
 
 def _enforce_inert_piece_cap(world: World) -> None:
